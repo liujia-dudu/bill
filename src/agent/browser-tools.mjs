@@ -65,7 +65,6 @@ export class InvoiceBrowserTools {
     this.selections = [];
     this.trace = [];
     this.preparationSteps = [];
-    this.sequence = 0;
     this.attribute = `data-invoice-${randomUUID().slice(0, 8)}`;
     this.stage = 0;
     this.finished = false;

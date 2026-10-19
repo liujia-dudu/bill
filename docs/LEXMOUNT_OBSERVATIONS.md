@@ -91,11 +91,12 @@ verify-sessions.mjs 只核实本工具报告中记录的会话，并关闭仍未
 https://browser.lexmount.com/docs/guides/browser-modes
 https://browser.lexmount.com/docs/nodejs-sdk/capabilities
 https://playwright.dev/docs/actionability
-tools/lexmount-probe/node_modules/lexmount/dist/index.d.ts
-tools/lexmount-probe/node_modules/lexmount/dist/index.mjs
+node_modules/lexmount/dist/index.d.ts
+node_modules/lexmount/dist/index.mjs
 ```
 
 核对摘录私有保存在 diagnostics/design-review-20261016/，本轮方案修订前版本位于其 before/ 子目录。
+观察工具复用项目根 `node_modules/`，不需要在工具目录单独安装。
 当前表单暂用 normal 的策略是 v3.4 待验证的实现选择，不修改上述 2026-10-15 的历史观察结论。
 
 ## 2026-10-16 t6 语言与引擎对照

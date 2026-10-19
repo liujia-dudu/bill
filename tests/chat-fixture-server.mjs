@@ -6,8 +6,15 @@ import { configuration, ROOT } from '../src/server/config.mjs';
 import { Store } from '../src/storage/store.mjs';
 import { Runner } from '../src/core/runner.mjs';
 import { createApp } from '../src/server/app.mjs';
+import {
+  SYNTHETIC_URL,
+  syntheticBrowser,
+  installSyntheticDns,
+  writeSyntheticRule,
+} from './fixtures/invoice-runner.mjs';
 
-const config = configuration();
+installSyntheticDns();
+const config = configuration({ openBrowser: syntheticBrowser() });
 const store = new Store(config.dataDir);
 const runner = new Runner(store, config);
 const fakeRun = async ({ prompt, dispatch, onRequest, sessionKey }) => {
@@ -81,12 +88,16 @@ const { app, chat } = createApp(store, config, {
   taskRunner: runner,
   chatRun: fakeRun,
 });
-// Local fixture only: let the real runner fill its synthetic page instead of an actual invoice URL.
+// Local fixture only: use reviewed synthetic JSON through the production rule executor.
 const originalCreate = runner.create.bind(runner);
-runner.create = (body, key) =>
-  body.source === 'input'
-    ? originalCreate({ ...body, source: 'demo', demoVariant: 'rules' }, key)
-    : originalCreate(body, key);
+runner.create = async (body, key) => {
+  const input = store.require('inputs', body.inputId);
+  if (input.urls[body.candidateIndex || 0] !== SYNTHETIC_URL)
+    throw new Error('UI tests only accept the synthetic QR');
+  const profile = body.profileSnapshot || store.require('profiles', body.profileId);
+  runner.rules = await writeSyntheticRule(path.join(config.dataDir, 'synthetic-rules'), profile);
+  return originalCreate(body, key);
+};
 app.use(express.static(path.join(ROOT, 'dist')));
 app.get('/{*path}', (_req, res) => res.sendFile(path.join(ROOT, 'dist/index.html')));
 const server = createServer(app);

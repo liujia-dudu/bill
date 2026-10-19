@@ -6,7 +6,8 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { ROOT } from '../src/server/config.mjs';
 import { Store } from '../src/storage/store.mjs';
-import { Runner, DEMO_PROFILE } from '../src/core/runner.mjs';
+import { Runner } from '../src/core/runner.mjs';
+import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
 import { AppError } from '../src/core/validation.mjs';
 import {
   prepareInvoiceBrowser,

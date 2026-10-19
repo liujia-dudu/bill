@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, access } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -8,8 +8,11 @@ import { createServer } from 'node:http';
 import { Store } from '../src/storage/store.mjs';
 import { ChatService } from '../src/core/chat-service.mjs';
 import { Runner } from '../src/core/runner.mjs';
-import { configuration, ROOT } from '../src/server/config.mjs';
+import { configuration } from '../src/server/config.mjs';
 import { createApp } from '../src/server/app.mjs';
+import { createSyntheticTask, installSyntheticDns } from './fixtures/invoice-runner.mjs';
+
+installSyntheticDns();
 
 async function environment() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'invoice-chat-'));
@@ -292,7 +295,7 @@ test('deleting a conversation cancels active turns and tasks, erases scoped file
       });
       e.store.patchTask(task.id, { status: 'cancelled' });
     };
-    const task = await e.runner.create({ source: 'demo', conversationId: c.id }, randomUUID());
+    const task = await createSyntheticTask(e.store, e.runner, c.id);
     const cancel = e.runner.cancel.bind(e.runner);
     e.runner.cancel = (id) => {
       const result = cancel(id);
@@ -391,14 +394,8 @@ test('separate conversations queue tasks serially and retain independent snapsho
         });
       e.store.patchTask(task.id, { status: 'observed' });
     };
-    const t1 = await e.runner.create(
-      { source: 'demo', mode: 'dry_run', conversationId: a.id },
-      randomUUID(),
-    );
-    const t2 = await e.runner.create(
-      { source: 'demo', mode: 'dry_run', conversationId: b.id },
-      randomUUID(),
-    );
+    const t1 = await createSyntheticTask(e.store, e.runner, a.id);
+    const t2 = await createSyntheticTask(e.store, e.runner, b.id);
     assert.equal(e.store.get('tasks', t2.id).status, 'queued');
     release();
     for (let i = 0; i < 20 && e.runner.running; i++) await new Promise((r) => setTimeout(r, 10));

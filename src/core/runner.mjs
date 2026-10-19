@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -13,32 +13,11 @@ import {
 } from './validation.mjs';
 import { openBrowser, closeOrphan } from '../browser/session.mjs';
 import { prepareInvoiceBrowser } from '../browser/preflight.mjs';
-import { installGuard, pageGuard, verifyGuard } from '../browser/guard.mjs';
-import {
-  observePage,
-  classifyPage,
-  assertInvoiceAmounts,
-  watchInvoiceOrder,
-} from '../browser/observe.mjs';
-import { fillDemo } from '../browser/demo-fill.mjs';
+import { observePage, classifyPage, assertInvoiceAmounts } from '../browser/observe.mjs';
 import { RuleRegistry } from '../rules/registry.mjs';
 import { executeRule } from '../rules/executor.mjs';
 import { runInvoiceAgent } from '../agent/run-invoice.mjs';
-import { modelHealth } from '../agent/model-config.mjs';
 
-export const DEMO_PROFILE = {
-  id: 'local-demo',
-  revision: 1,
-  type: 'enterprise',
-  title: '青禾生活科技有限公司（演示）',
-  taxId: '91310000MA00000000',
-  email: 'invoice@example.invalid',
-  phone: '',
-  address: '',
-  telephone: '',
-  bankName: '',
-  bankAccount: '',
-};
 export class Runner {
   constructor(store, config) {
     this.store = store;
@@ -72,20 +51,14 @@ export class Runner {
       return existing;
     }
     if (body.conversationId) this.store.require('conversations', body.conversationId);
-    const demo = body.source === 'demo';
-    const demoVariant = demo && body.demoVariant === 'agent' ? 'agent' : 'rules';
-    if (demoVariant === 'agent' && !modelHealth().modelConfigured)
-      throw new AppError('请先配置模型服务再运行 Harness 演示', 400, 'model_not_configured');
-    if (body.source !== 'demo' && body.source !== 'input')
-      throw new AppError('请选择二维码或网页地址');
-    const input = demo ? null : this.store.require('inputs', body.inputId);
-    const rawUrl = demo ? 'demo:invoice' : input.urls?.[Number(body.candidateIndex || 0)];
+    if (body.source !== 'input') throw new AppError('请选择二维码或网页地址');
+    const input = this.store.require('inputs', body.inputId);
+    const rawUrl = input.urls?.[Number(body.candidateIndex || 0)];
     if (!rawUrl) throw new AppError('没有可用的二维码地址，请选择候选或输入完整地址');
-    if (!demo) await validatePublicUrl(rawUrl);
+    await validatePublicUrl(rawUrl);
     const mode = body.mode || 'dry_run';
-    const profile = demo
-      ? { ...DEMO_PROFILE }
-      : mode === 'read_only'
+    const profile =
+      mode === 'read_only'
         ? null
         : body.profileSnapshot || this.store.require('profiles', body.profileId);
     if (
@@ -93,9 +66,9 @@ export class Runner {
       (!body.conversationId || body.profileSnapshot.id !== `temporary-${body.conversationId}`)
     )
       throw new AppError('临时资料不属于当前对话', 403);
-    if (body.conversationId && input && input.conversationId !== body.conversationId)
+    if (body.conversationId && input.conversationId !== body.conversationId)
       throw new AppError('附件不属于当前对话', 403);
-    if (!demo && mode === 'dry_run') {
+    if (mode === 'dry_run') {
       if (profile.revision !== Number(body.profileRevision))
         throw new AppError('资料已更新，请重新选择', 409);
       const problems = profileProblems(profile, Boolean(profile.taxId));
@@ -118,24 +91,19 @@ export class Runner {
       throw new AppError('对话正在删除', 409);
     const task = this.store.createTask(
       {
-        source: demo ? 'demo' : 'input',
+        source: 'input',
         conversationId: body.conversationId || null,
         userId: 'local',
         temporaryProfile: Boolean(body.profileSnapshot),
-        demoVariant,
-        inputId: input?.id || null,
+        inputId: input.id,
         url: rawUrl,
         entryDigest: digest(rawUrl),
         profile,
         profileId: profile?.id || null,
         mode,
-        engine: demo ? 'local' : engine,
+        engine,
         engineRequested: engine,
-        title: demo
-          ? demoVariant === 'agent'
-            ? '模型演示 · 拾味餐厅'
-            : '本地演示 · 青禾小馆'
-          : new URL(rawUrl).hostname,
+        title: new URL(rawUrl).hostname,
         coverageGaps: ['未执行真实提交，平台受理及提交校验未验证'],
       },
       key,
@@ -204,7 +172,6 @@ export class Runner {
       if (this.cancelled.has(task.id) || this.stopped)
         throw new AppError('任务已取消', 400, 'cancelled');
       if (
-        task.source !== 'demo' &&
         task.mode === 'dry_run' &&
         !task.temporaryProfile &&
         !this.store.get('profiles', task.profileId)
@@ -242,7 +209,13 @@ export class Runner {
     this.store.patchTask(task.id, { status: 'running', startedAt: new Date().toISOString() });
     try {
       check();
-      const rule = task.source === 'demo' ? null : entryRule(task.url);
+      if (task.source !== 'input')
+        throw new AppError(
+          '旧演示任务不再执行，请从当前对话重新提供入口',
+          400,
+          'unsupported_task_source',
+        );
+      const rule = entryRule(task.url);
       if (
         rule &&
         !(task.engineRequested === 'light' && rule.reasonCode === 'wechat_oauth_required')
@@ -250,71 +223,40 @@ export class Runner {
         outcome = rule;
         return;
       }
-      if (task.source === 'demo') {
-        handle = await step('连接浏览器', () => openBrowser(actualEngine, { demo: true }));
-        this.activeHandle = handle;
-        orderRead = watchInvoiceOrder(handle.page);
-        handle.page.setDefaultTimeout(15000);
-        await step('启用提交拦截', () =>
-          installGuard(handle.context, {
-            demo: true,
-            onBlocked: (record) => {
-              if (blocked.length < 100) blocked.push(record);
-            },
-          }),
-        );
-        await step('检查请求拦截', async () => {
-          await verifyGuard(handle.page);
-          if (!blocked.some((record) => record.path === '/api/__invoice_guard_probe__'))
-            throw new Error('Browser request was not intercepted');
-        });
-        await handle.page.setContent(
-          await readFile(
-            path.join(
-              this.config.root,
-              'tests/fixtures/pages',
-              task.demoVariant === 'agent' ? 'invoice-agent-demo.html' : 'invoice-demo.html',
-            ),
-            'utf8',
-          ),
-        );
-        await handle.page.evaluate(pageGuard);
-      } else {
-        const prepared = await prepareInvoiceBrowser({
-          engine: actualEngine,
-          url: task.url,
-          directory: dir,
-          companyTitle: task.profile?.type === 'enterprise' ? task.profile.title : null,
-          open: this.config.openBrowser || openBrowser,
-          check,
-          step,
-          onHandle: (active) => {
-            this.activeHandle = active;
-          },
-          onBlocked: (record) => {
-            if (blocked.length < 100) blocked.push(record);
-          },
-          onArtifact: (artifact) => {
-            const current = this.store.require('tasks', task.id);
-            this.store.patchTask(task.id, {
-              artifacts: [
-                ...current.artifacts.filter((item) => item.name !== artifact.name),
-                artifact,
-              ],
-            });
-          },
-          onUpdate: (patch) => {
-            this.store.patchTask(task.id, patch);
-            if (patch.engineFallback?.result === 'checking')
-              this.store.event(task.id, 'engine_recheck', 'light 页面异常，正在使用 normal 复核');
-          },
-        });
-        handle = prepared.handle;
-        orderRead = prepared.orderRead;
-        initialObservation = prepared.observation;
-        initialState = prepared.state;
-        actualEngine = prepared.engine;
-      }
+      const prepared = await prepareInvoiceBrowser({
+        engine: actualEngine,
+        url: task.url,
+        directory: dir,
+        companyTitle: task.profile?.type === 'enterprise' ? task.profile.title : null,
+        open: this.config.openBrowser || openBrowser,
+        check,
+        step,
+        onHandle: (active) => {
+          this.activeHandle = active;
+        },
+        onBlocked: (record) => {
+          if (blocked.length < 100) blocked.push(record);
+        },
+        onArtifact: (artifact) => {
+          const current = this.store.require('tasks', task.id);
+          this.store.patchTask(task.id, {
+            artifacts: [
+              ...current.artifacts.filter((item) => item.name !== artifact.name),
+              artifact,
+            ],
+          });
+        },
+        onUpdate: (patch) => {
+          this.store.patchTask(task.id, patch);
+          if (patch.engineFallback?.result === 'checking')
+            this.store.event(task.id, 'engine_recheck', 'light 页面异常，正在使用 normal 复核');
+        },
+      });
+      handle = prepared.handle;
+      orderRead = prepared.orderRead;
+      initialObservation = prepared.observation;
+      initialState = prepared.state;
+      actualEngine = prepared.engine;
       if (initialState && !initialObservation) {
         outcome = initialState;
         await screenshot();
@@ -330,7 +272,7 @@ export class Runner {
         return;
       }
       this.store.patchTask(task.id, {
-        finalHost: task.source === 'demo' ? '本地演示' : new URL(handle.page.url()).hostname,
+        finalHost: new URL(handle.page.url()).hostname,
       });
       if (task.mode === 'read_only') {
         await screenshot();
@@ -349,30 +291,24 @@ export class Runner {
         Object.assign(task.profile, saved);
         return saved;
       };
-      const route =
-        task.source === 'demo'
-          ? { source: task.demoVariant === 'agent' ? 'agent' : 'adapter', reason: 'explicit_demo' }
-          : await this.rules.select(before, task.profile, actualEngine);
+      const route = await this.rules.select(before, task.profile, actualEngine);
       this.store.patchTask(task.id, {
         executionSource: route.source,
         routeReason: route.reason || 'verified_contract',
       });
       if (route.source === 'adapter') {
         try {
-          result =
-            task.source === 'demo'
-              ? await fillDemo(handle.page, task.profile, step)
-              : await executeRule({
-                  route,
-                  registry: this.rules,
-                  page: handle.page,
-                  profile: task.profile,
-                  directory: dir,
-                  check,
-                  onTaxVerified,
-                  onProgress: (message) => this.store.event(task.id, 'rule_tool', message),
-                  onCheck: (checks) => this.store.patchTask(task.id, { fieldChecks: checks }),
-                });
+          result = await executeRule({
+            route,
+            registry: this.rules,
+            page: handle.page,
+            profile: task.profile,
+            directory: dir,
+            check,
+            onTaxVerified,
+            onProgress: (message) => this.store.event(task.id, 'rule_tool', message),
+            onCheck: (checks) => this.store.patchTask(task.id, { fieldChecks: checks }),
+          });
         } catch (error) {
           if (
             ![
@@ -403,7 +339,6 @@ export class Runner {
           taskId: task.id,
           dataDir: this.config.dataDir,
           directory: dir,
-          demo: task.source === 'demo',
           engine: actualEngine,
           browserTools: preparationTools,
           check,
@@ -429,7 +364,7 @@ export class Runner {
         coverageGaps: result.coverageGaps,
         transaction: result.transaction || this.store.require('tasks', task.id).transaction,
         parameterSignature: result.signature,
-        signatureComplete: result.signatureComplete ?? task.source === 'demo',
+        signatureComplete: result.signatureComplete === true,
         executionSource: result.executionSource || 'adapter',
         ...(result.ruleRevision
           ? {
@@ -486,7 +421,6 @@ export class Runner {
         }),
       };
       if (
-        task.source !== 'demo' &&
         !task.temporaryProfile &&
         this.store.get('profiles', task.profileId)?.revision !== task.profile.revision
       )
@@ -597,7 +531,6 @@ export class Runner {
     if (task.status !== 'awaiting_review' || body.token !== task.reviewToken)
       throw new AppError('此审核已失效，请刷新任务', 409);
     if (
-      task.source !== 'demo' &&
       !task.temporaryProfile &&
       this.store.get('profiles', task.profileId)?.revision !== task.profile?.revision
     )

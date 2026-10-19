@@ -2,7 +2,7 @@
 import '../src/server/config.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { configuration, ROOT } from '../src/server/config.mjs';
 import { Store } from '../src/storage/store.mjs';
 import { Runner } from '../src/core/runner.mjs';

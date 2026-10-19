@@ -5,19 +5,18 @@ import { runHarness } from '../agent/harness-runtime.mjs';
 import { CHAT_PERSONA } from '../agent/chat-tools.mjs';
 import { Attachments } from './attachments.mjs';
 
-const statusText = {
-  awaiting_review: '填写已完成，请核对截图。',
-  simulated_success: '已确认填写正确，记为模拟成功，未真实提交。',
-  needs_changes: '需要修改资料后重新准备。',
-  cancelled: '任务已取消。',
-  failed: '本次处理未完成。',
-  needs_user_input: '需要补充信息后继续。',
-  unsupported_browser: '此入口需要客户端办理。',
-  already_submitted: '此交易已有申请。',
-  already_issued: '此交易已有发票。',
-  observed: '只读检查完成。',
-  interrupted: '服务重启，任务已暂停。',
-};
+const experienceStatuses = new Set([
+  'awaiting_review',
+  'simulated_success',
+  'needs_changes',
+  'cancelled',
+  'failed',
+  'needs_user_input',
+  'unsupported_browser',
+  'already_submitted',
+  'already_issued',
+  'observed',
+]);
 const localTasks = (store, id) => store.list('tasks').filter((t) => t.conversationId === id);
 const compactTask = (task) => ({
   id: task.id,
@@ -121,7 +120,7 @@ export class ChatService {
         taskId: task.id,
         text: task.message,
       });
-    if (statusText[task.status] && task.status !== 'interrupted') {
+    if (experienceStatuses.has(task.status)) {
       const subject = `task:${task.id}`;
       const previous = this.store
         .list('memories')
@@ -593,7 +592,6 @@ export class ChatService {
           {
             source: old.source,
             conversationId: id,
-            demoVariant: old.demoVariant,
             inputId: old.inputId,
             candidateIndex: Math.max(0, original?.urls.indexOf(old.url) || 0),
             mode: old.mode,

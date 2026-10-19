@@ -13,7 +13,8 @@ import {
   digest,
 } from '../src/core/validation.mjs';
 import { requestAllowed, installGuard, pageGuard, verifyGuard } from '../src/browser/guard.mjs';
-import { Runner, DEMO_PROFILE } from '../src/core/runner.mjs';
+import { Runner } from '../src/core/runner.mjs';
+import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
 import { chromium } from 'playwright';
 import { ROOT } from '../src/server/config.mjs';
 
@@ -157,8 +158,10 @@ test('review requires current token, screenshot and matching fields; never claim
   const runner = new Runner(store, { root: ROOT, dataDir: dir });
   try {
     await assert.rejects(runner.create({ mode: 'execute' }, randomUUID()), /禁止真实提交/);
+    await assert.rejects(runner.create({ source: 'demo' }, randomUUID()), /请选择二维码/);
+    const profile = store.saveProfile(DEMO_PROFILE);
     const task = store.createTask(
-      { mode: 'dry_run', source: 'demo', profile: DEMO_PROFILE },
+      { mode: 'dry_run', source: 'input', profile, profileId: profile.id },
       randomUUID(),
     );
     store.patchTask(task.id, {
@@ -176,6 +179,35 @@ test('review requires current token, screenshot and matching fields; never claim
     assert.equal(approved.actualSubmitted, false);
     assert.equal((await runner.review(task.id, { token: 'token', approved: true })).id, task.id);
   } finally {
+    store.close();
+  }
+});
+
+test('archived demo tasks cannot reopen the removed execution path', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'invoice-legacy-demo-'));
+  const store = new Store(dir);
+  let opened = false;
+  const runner = new Runner(store, {
+    root: ROOT,
+    dataDir: dir,
+    openBrowser: async () => {
+      opened = true;
+      throw new Error('Legacy tasks must stop before opening a browser');
+    },
+  });
+  try {
+    const task = store.createTask(
+      { source: 'demo', mode: 'read_only', url: 'demo:invoice' },
+      randomUUID(),
+    );
+    await runner.execute(task);
+    const result = store.require('tasks', task.id);
+    assert.equal(result.reasonCode, 'unsupported_task_source');
+    assert.equal(result.status, 'failed');
+    assert.equal(result.actualSubmitted, false);
+    assert.equal(opened, false);
+  } finally {
+    await runner.close();
     store.close();
   }
 });

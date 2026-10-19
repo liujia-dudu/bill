@@ -65,7 +65,7 @@ const invoiceDefinitions = [
     name: 'invoice_finish',
     description:
       '填写完成后请求程序重新校验、保存截图并等待用户审核。仅在完整购买方资料已填写、必填项无缺失、抵达最终提交前页面时调用；不会批准或提交。',
-    parameters: { summary: text('简短填写说明，不含真实资料') },
+    parameters: {},
   },
   {
     name: 'invoice_blocked',

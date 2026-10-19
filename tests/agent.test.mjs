@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { InvoiceBrowserTools, redactProfile } from '../src/agent/browser-tools.mjs';
 import { pageGuard, installGuard } from '../src/browser/guard.mjs';
-import { DEMO_PROFILE } from '../src/core/runner.mjs';
+import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
 import { pageContract } from '../src/rules/contract.mjs';
 import { modelHealth } from '../src/agent/model-config.mjs';
 import { observePage } from '../src/browser/observe.mjs';

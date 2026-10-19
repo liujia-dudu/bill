@@ -5,7 +5,12 @@ import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { runInvoiceAgent } from '../src/agent/run-invoice.mjs';
 import { installGuard, pageGuard } from '../src/browser/guard.mjs';
-import { DEMO_PROFILE } from '../src/core/runner.mjs';
+import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
+import {
+  syntheticBrowser,
+  installSyntheticDns,
+  createSyntheticTask,
+} from './fixtures/invoice-runner.mjs';
 import { configuration } from '../src/server/config.mjs';
 import { Store } from '../src/storage/store.mjs';
 import { Runner } from '../src/core/runner.mjs';
@@ -80,14 +85,16 @@ for (const testCase of cases) {
   }
 }
 // Exercise the actual task controller, not only the tool bridge.
-const config = configuration({ dataDir: path.join(root, 'runner') });
+installSyntheticDns();
+const config = configuration({
+  dataDir: path.join(root, 'runner'),
+  rulesDir: path.join(root, 'no-formal-rules'),
+  openBrowser: syntheticBrowser('invoice-agent-demo.html'),
+});
 const store = new Store(config.dataDir);
 const runner = new Runner(store, config);
 try {
-  const task = await runner.create(
-    { source: 'demo', demoVariant: 'agent', mode: 'dry_run' },
-    crypto.randomUUID(),
-  );
+  const task = await createSyntheticTask(store, runner, store.createConversation().id);
   for (let i = 0; i < 600; i++) {
     const current = store.require('tasks', task.id);
     if (!['queued', 'running'].includes(current.status)) break;

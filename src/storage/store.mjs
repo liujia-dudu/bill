@@ -212,7 +212,7 @@ export class Store extends EventEmitter {
       throw new AppError('页面税号与原资料冲突，请人工核对', 409, 'tax_conflict');
     const taxSource = { ...source, taskId, conversationId: task.conversationId };
     let saved;
-    if (task.temporaryProfile || task.source === 'demo') {
+    if (task.temporaryProfile) {
       // A one-task override must never silently become a shared company profile.
       saved = { ...profile, taxId, taxSource };
     } else {
@@ -231,7 +231,7 @@ export class Store extends EventEmitter {
         kind: 'profile',
         profileId: saved.id,
         data: saved,
-        scope: task.temporaryProfile || task.source === 'demo' ? 'conversation' : 'shared',
+        scope: task.temporaryProfile ? 'conversation' : 'shared',
         text: task.temporaryProfile
           ? '已从开票页面核对税号，用于本次开票'
           : '已从开票页面核对并保存税号',

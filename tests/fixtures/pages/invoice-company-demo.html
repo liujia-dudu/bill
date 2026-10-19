@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" /><title>企业查询合成测试</title>
+  <style>
+    body {
+      font: 16px sans-serif;
+      margin: 32px;
+      max-width: 500px;
+    }
+    .field {
+      margin: 20px 0;
+    }
+    label {
+      display: block;
+    }
+    input {
+      padding: 10px;
+      width: 90%;
+    }
+    [role='option'] {
+      padding: 12px;
+      background: #eef4ee;
+      margin: 4px;
+      cursor: pointer;
+    }
+    button {
+      padding: 10px;
+    }
+  </style>
+  <section>
+    <h2>购买方信息</h2>
+    <div class="field">
+      <label for="buyer">公司名称 *</label
+      ><input id="buyer" role="combobox" required aria-controls="choices" />
+      <div id="choices" role="listbox" hidden></div>
+    </div>
+    <div class="field">
+      <label for="credit">统一社会信用代码 *</label><input id="credit" required readonly />
+    </div>
+    <div class="field">
+      <label for="email">收票邮箱 *</label><input id="email" type="email" required />
+    </div>
+    <button type="button" id="submit">提交开票</button>
+  </section>
+  <script>
+    window.submissionCount = 0;
+    window.testCompanies = [{ title: '青禾合成科技有限公司', taxId: '91310000MA0000000Y' }];
+    const buyer = document.getElementById('buyer'),
+      choices = document.getElementById('choices'),
+      credit = document.getElementById('credit');
+    buyer.addEventListener('input', () => {
+      choices.replaceChildren();
+      for (const company of window.testCompanies) {
+        const option = document.createElement('div');
+        option.setAttribute('role', 'option');
+        option.textContent = company.title + (company.hideTax ? '' : ' | ' + company.taxId);
+        option.addEventListener('click', () => {
+          buyer.value = company.title;
+          credit.value = company.taxId;
+          choices.hidden = true;
+        });
+        choices.append(option);
+      }
+      choices.hidden = !buyer.value;
+    });
+    document.getElementById('submit').addEventListener('click', () => window.submissionCount++);
+  </script>
+</html>

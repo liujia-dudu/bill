@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>青禾小馆 · 开票信息</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #f3f5f4;
+        color: #263b32;
+        font-family: Arial, 'Microsoft YaHei', sans-serif;
+        padding: 24px 18px;
+      }
+      .card {
+        background: white;
+        border: 1px solid #dfe7e2;
+        border-radius: 18px;
+        padding: 24px;
+        margin-bottom: 16px;
+      }
+      .brand {
+        font-size: 12px;
+        color: #6d8879;
+        letter-spacing: 2px;
+      }
+      h1 {
+        font-size: 23px;
+        margin: 12px 0 4px;
+      }
+      .sub {
+        font-size: 12px;
+        color: #77867e;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: #5c6b63;
+        margin: 17px 0 8px;
+      }
+      input {
+        width: 100%;
+        border: 1px solid #d9e1dc;
+        border-radius: 8px;
+        padding: 12px;
+        font-size: 14px;
+        color: #233f31;
+        background: #fff;
+      }
+      .types {
+        display: flex;
+        gap: 20px;
+      }
+      .types label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .types input {
+        width: auto;
+      }
+      .amount {
+        font-size: 28px;
+        font-weight: 700;
+        margin: 10px 0;
+      }
+      .pill {
+        display: inline-block;
+        background: #e9f2ea;
+        color: #527d58;
+        border-radius: 20px;
+        padding: 5px 10px;
+        font-size: 11px;
+      }
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 9px;
+        padding: 14px;
+        background: #33684b;
+        color: white;
+        margin-top: 20px;
+        font-size: 14px;
+      }
+      .notice {
+        font-size: 11px;
+        line-height: 1.7;
+        color: #849087;
+      }
+      .agreement {
+        font-size: 12px;
+        margin-top: 20px;
+      }
+      .agreement input {
+        width: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="brand">青禾小馆 · 本地演示</div>
+      <h1>填写开票信息</h1>
+      <p class="sub">演示订单 DEMO-001</p>
+      <div class="amount">¥ 268.00</div>
+      <span class="pill">电子普通发票</span>
+    </div>
+    <div class="card">
+      <div class="types">
+        <label><input type="radio" name="buyerType" value="enterprise" checked />企业</label
+        ><label><input type="radio" name="buyerType" value="personal" />个人</label>
+      </div>
+      <div class="form-field">
+        <label for="title">发票抬头 *</label><input id="title" name="title" required />
+      </div>
+      <div class="form-field" id="tax-row">
+        <label for="taxId">纳税人识别号 *</label><input id="taxId" name="taxId" required />
+      </div>
+      <div class="form-field">
+        <label for="email">收票邮箱 *</label><input id="email" name="email" type="email" required />
+      </div>
+      <div class="form-field">
+        <label for="phone">手机号码</label><input id="phone" name="phone" />
+      </div>
+      <div class="agreement"><input type="checkbox" id="agree" /> 我已阅读并同意开票服务协议</div>
+      <button type="button" id="submit">提交开票</button>
+      <p class="notice">
+        这是本地合成页面，用于体验填写与截图审核。不会连接商家、发送邮件或开具发票。
+      </p>
+    </div>
+    <script>
+      window.submissionCount = 0;
+      document.querySelector('#submit').onclick = () => {
+        window.submissionCount++;
+      };
+      document.querySelectorAll('[name=buyerType]').forEach((input) =>
+        input.addEventListener('change', () => {
+          const personal = input.value === 'personal';
+          document.querySelector('#tax-row').style.display = personal ? 'none' : 'block';
+          document.querySelector('#taxId').required = !personal;
+        }),
+      );
+    </script>
+  </body>
+</html>

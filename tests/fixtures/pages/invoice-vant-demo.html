@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" />
+  <title>异步企业联想合成测试</title>
+  <style>
+    body {
+      font: 16px sans-serif;
+      max-width: 430px;
+      padding: 16px;
+    }
+    .van-cell {
+      display: flex;
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .van-field__label {
+      width: 90px;
+    }
+    input {
+      padding: 6px;
+    }
+    .invoice-header-suggest > div {
+      padding: 12px;
+      background: #eee;
+      cursor: pointer;
+    }
+    button {
+      padding: 12px;
+    }
+  </style>
+  <div class="invoice-header-content">
+    <div class="van-cell">
+      <div class="van-field__label"><span>抬头名称</span></div>
+      <input placeholder="请输入发票抬头" />
+    </div>
+    <div class="invoice-header-suggest" hidden></div>
+  </div>
+  <div class="van-cell">
+    <div class="van-field__label"><span>企业税号</span></div>
+    <input placeholder="请输入纳税人识别号" />
+  </div>
+  <div class="van-cell">
+    <div class="van-field__label"><span>邮箱地址</span></div>
+    <input placeholder="请输入接收电子发票的邮箱" />
+  </div>
+  <div class="van-cell">
+    <div class="van-field__label"><span>总金额</span></div>
+    <input readonly value="¥0" />
+  </div>
+  <button type="button" id="submit">提交</button>
+  <script>
+    window.submissionCount = 0;
+    const inputs = document.querySelectorAll('input');
+    const choices = document.querySelector('.invoice-header-suggest');
+    inputs[0].addEventListener('input', () => {
+      setTimeout(() => {
+        const candidate = document.createElement('div');
+        candidate.textContent = '青禾合成科技有限公司';
+        candidate.addEventListener('click', () => {
+          inputs[0].value = candidate.textContent;
+          inputs[1].value = '91310000MA0000000Y';
+          choices.hidden = true;
+        });
+        choices.replaceChildren(candidate);
+        choices.hidden = false;
+      }, 600);
+    });
+    document.getElementById('submit').addEventListener('click', () => window.submissionCount++);
+  </script>
+</html>

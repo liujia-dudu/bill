@@ -1,0 +1,3 @@
+numpy>=2.0,<3
+opencv-python>=4.10,<5
+zxing-cpp>=2.2,<4

@@ -1,0 +1,61 @@
+# The upstream sdk-minimal runtime owns the model/tool loop. This application
+# removes every general-purpose tool and exposes only its local invoice broker.
+- id: persistent-bash
+  disabled: true
+- id: persistent-pwsh
+  disabled: true
+- id: terminal-bash
+  disabled: true
+- id: terminal-pwsh
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-working-directory
+  disabled: true
+- id: compaction-basic
+  disabled: !!js "process.env.INVOICE_HARNESS_PURPOSE !== 'chat'"
+  config:
+    thresholdRatio: 0.75
+    headroomTokens: 8192
+    retainTokens: 10000
+    maxTokens: 3000
+    compactionRetries: 0
+    maxOverflowRetries: 1
+- id: image-offload
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: llm-retry
+  disabled: true
+- insert:
+    - id: invoice-model
+      name: '@deepseek-ai/dsh-llm-pi-ai'
+      config:
+        providers:
+          invoice-model:
+            api: openai-completions
+            apiKeyEnv: INVOICE_MODEL_API_KEY
+            baseURL: !!js process.env.INVOICE_MODEL_BASE_URL
+            timeoutMs: 90000
+            streamIdleTimeoutMs: 90000
+            retryPolicy:
+              mode: normal
+              maxRetries: 0
+            compat:
+              supportsDeveloperRole: false
+              supportsStore: false
+              maxTokensField: max_tokens
+            models:
+              - id: !!js process.env.INVOICE_MODEL_NAME
+                contextWindow: 65536
+                maxTokens: 8192
+                reasoningEfforts: false
+                input: !!js "process.env.INVOICE_MODEL_INPUT_IMAGES === '1' ? ['text', 'image'] : ['text']"
+    - id: invoice-tools
+      name: ./harness-plugin.mjs

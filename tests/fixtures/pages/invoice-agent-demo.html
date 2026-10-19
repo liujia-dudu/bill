@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>拾味餐厅 · 电子发票</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 22px;
+        background: #f1f5f2;
+        font:
+          14px Arial,
+          'Microsoft YaHei',
+          sans-serif;
+        color: #304639;
+      }
+      section {
+        padding: 24px;
+        background: white;
+        border: 1px solid #dfe8e0;
+        border-radius: 14px;
+        margin-bottom: 18px;
+      }
+      h1 {
+        font-size: 23px;
+        margin: 7px 0 14px;
+      }
+      h2 {
+        font-size: 16px;
+        margin: 0 0 14px;
+      }
+      .note {
+        font-size: 12px;
+        color: #86998b;
+        line-height: 1.8;
+      }
+      .field {
+        margin: 18px 0;
+      }
+      label {
+        display: block;
+        margin-bottom: 7px;
+        font-size: 13px;
+      }
+      input {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #dbe5dd;
+        border-radius: 8px;
+        font: inherit;
+      }
+      .radios {
+        display: flex;
+        gap: 15px;
+      }
+      .radios label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .radios input {
+        width: auto;
+      }
+      button {
+        background: #3c7b56;
+        color: white;
+        border: 0;
+        border-radius: 8px;
+        padding: 13px 20px;
+        font: inherit;
+      }
+      button.alt {
+        background: #edf3ed;
+        color: #688670;
+      }
+      #second {
+        display: none;
+      }
+      .seller input {
+        background: #f5f7f5;
+        color: #8fa395;
+      }
+      .amount {
+        font-size: 27px;
+      }
+      .footer {
+        font-size: 11px;
+        color: #90a195;
+        margin-top: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <section>
+      <div class="note">拾味餐厅 · Harness 新页面演示</div>
+      <h1>电子发票申请</h1>
+      <div class="amount">¥ 198.00</div>
+      <p class="note">此页面使用合成资料，不连接真实商家。</p>
+    </section>
+    <section class="seller">
+      <h2>销售方信息</h2>
+      <div class="field">
+        <label for="seller">单位名称</label><input id="seller" value="拾味餐饮有限公司" readonly />
+      </div>
+    </section>
+    <section id="first">
+      <h2>购买方信息</h2>
+      <div class="radios">
+        <label><input type="radio" name="type" value="company" checked />企业</label
+        ><label><input type="radio" name="type" value="person" />个人</label>
+      </div>
+      <div class="field">
+        <label for="buyer">单位名称 *</label
+        ><input id="buyer" name="buyer" required placeholder="请输入购买方完整名称" />
+      </div>
+      <div class="field">
+        <label for="credit">统一社会信用代码 *</label><input id="credit" name="credit" required />
+      </div>
+      <button type="button" id="next">下一步</button>
+    </section>
+    <section id="second">
+      <h2>收票信息</h2>
+      <div class="field">
+        <label for="delivery">电子邮件 *</label
+        ><input
+          type="email"
+          id="delivery"
+          name="delivery"
+          required
+          placeholder="用于接收电子发票"
+        />
+      </div>
+      <p class="note">核对信息后方可申请。当前演示禁止提交。</p>
+      <button class="alt" type="button" id="back">上一步</button>
+      <button type="button" id="submit">提交开票</button>
+    </section>
+    <p class="footer">Harness 负责识别页面，控制器执行填写并保存截图。</p>
+    <script>
+      window.submissionCount = 0;
+      document.querySelector('#next').onclick = () => {
+        document.querySelector('#first').style.display = 'none';
+        document.querySelector('#second').style.display = 'block';
+      };
+      document.querySelector('#back').onclick = () => {
+        document.querySelector('#second').style.display = 'none';
+        document.querySelector('#first').style.display = 'block';
+      };
+      document.querySelector('#submit').onclick = () => {
+        window.submissionCount++;
+      };
+    </script>
+  </body>
+</html>

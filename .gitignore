@@ -1,0 +1,44 @@
+# Local credentials, including provider exports in nested folders.
+.env
+.env.*
+!.env.example
+*.[cC][sS][vV].bak
+*[aA][pP][iI][kK][eE][yY]*.[cC][sS][vV]
+*[aA][pP][iI]_[kK][eE][yY]*.[cC][sS][vV]
+*[aA][pP][iI]-[kK][eE][yY]*.[cC][sS][vV]
+.npmrc
+.pypirc
+.netrc
+credentials.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Private invoice inputs, records, browser evidence and generated output.
+/data/
+/diagnostics/
+/test-results/
+/dist/
+/coverage/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+*.har
+/docs/INVOICE_CASES.md
+/docs/INVOICE_URLS.md
+
+# Dependencies, caches and local editor state.
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

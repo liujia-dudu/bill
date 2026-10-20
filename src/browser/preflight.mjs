@@ -38,12 +38,9 @@ export function pageAbnormality(observation) {
   return null;
 }
 
+// Client-only entries (WeChat OAuth, "open in WeChat") are the site's decision and were
+// verified identical under both engines, so they are final rather than a light failure.
 export function engineRecheckReason(state) {
-  if (
-    state?.status === 'unsupported_browser' &&
-    ['wechat_oauth_required', 'client_required'].includes(state.reasonCode)
-  )
-    return state.reasonCode;
   if (
     state?.status === 'failed' &&
     [
@@ -220,6 +217,8 @@ export async function prepareInvoiceBrowser({
           compatibilityConfirmed: false,
         };
         await publish();
+        // light is already closed and recorded; skip the failure cleanup in finally.
+        returned = true;
         continue;
       }
       if (fallback) {

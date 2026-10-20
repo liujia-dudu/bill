@@ -277,10 +277,7 @@ export class Runner {
           'unsupported_task_source',
         );
       const rule = entryRule(task.url);
-      if (
-        rule &&
-        !(task.engineRequested === 'light' && rule.reasonCode === 'wechat_oauth_required')
-      ) {
+      if (rule) {
         outcome = rule;
         return;
       }

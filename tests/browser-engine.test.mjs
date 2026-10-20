@@ -95,10 +95,8 @@ test('generic errors request recheck without guessing causes or field mappings',
   );
   for (const reasonCode of ['expired', 'invalid_invoice_amount', 'cancelled', 'private_url'])
     assert.equal(engineRecheckReason({ status: 'failed', reasonCode }), null);
-  assert.equal(
-    engineRecheckReason({ status: 'unsupported_browser', reasonCode: 'known_client_entry' }),
-    null,
-  );
+  for (const reasonCode of ['known_client_entry', 'wechat_oauth_required', 'client_required'])
+    assert.equal(engineRecheckReason({ status: 'unsupported_browser', reasonCode }), null);
 });
 
 test('light error is closed before one guarded normal recheck; no fields are written', async () => {
@@ -223,7 +221,7 @@ test('HTTP errors and blank pages recheck once, but screenshot failures are not 
   }
 });
 
-test('client-required pages recheck; exact OAuth navigation stays blocked in both engines', async () => {
+test('client-required pages and WeChat OAuth stop under light without a normal recheck', async () => {
   for (const light of [
     '<p>请在微信客户端打开链接</p>',
     '<script>location.href="https://open.weixin.qq.com/connect/oauth2/authorize?synthetic=1"</script>',
@@ -237,9 +235,9 @@ test('client-required pages recheck; exact OAuth navigation stays blocked in bot
         directory: env.directory,
         open: env.open,
       });
-      assert.equal(prepared.engine, 'normal');
+      assert.equal(prepared.engine, 'light');
       assert.equal(prepared.state.status, 'unsupported_browser');
-      assert.equal(env.opened.length, 2);
+      assert.equal(env.opened.length, 1);
       if (light.includes('location.href'))
         assert.equal(prepared.state.reasonCode, 'wechat_oauth_required');
     } finally {
@@ -318,6 +316,10 @@ test('Runner reports actual engine and routes using normal, while failures canno
       assert.equal(routeEngine, normal === form ? 'normal' : undefined);
       assert.ok(result.artifacts.some((artifact) => artifact.name === 'engine-check-light.png'));
       assert.ok(result.artifacts.some((artifact) => artifact.name === 'engine-check-normal.png'));
+      const notices = store
+        .require('tasks', task.id)
+        .events.filter((event) => event.phase === 'engine_recheck');
+      assert.equal(notices.length, 1);
     } finally {
       await runner.close();
       store.close();

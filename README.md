@@ -93,6 +93,13 @@ diagnostics/           专项诊断与迁移备份
 页面税号查询证据保存在任务目录的 company-query.json / company-query.png，资料记录页面来源、时间和任务引用。删除所属对话会删除任务截图；共享资料中已核对的税号与来源说明仍保留。旧 company-searches 目录仅为历史归档，不再读取或生成。
 data/ 是本机普通 SQLite/文件，备份前停止服务并复制 data/。不把该目录作为网页静态资源发布。
 
+自动清理（`tools/cleanup.mjs`，在 `npm test`、`npm start`、`npm run dev` 前自动运行，记录写入 `data/logs/cleanup.log`；`npm run cleanup -- --dry-run` 只列出不删除）：
+
+- `test-results/`：同类输出保留最近 3 份，超过 7 天的删除。
+- `diagnostics/`：含数据库的备份保留最近 3 份（不按天数删）；其他内容超过 7 天删除；其中的 `node_modules` 一律删除。
+- `data/logs/`：超过 7 天删除。
+- 不自动清理：`data/invoice.sqlite`、`data/samples/`、`data/lexmount-observations/`、`.env`。任务截图、附件和 Harness 记录随删除对话清理。
+
 旧三页导航、资料弹窗、旧页面写接口、正则候选模块及对应 UI 测试辅助代码已移除。
 只读 /api/profiles 和 /api/tasks 保留用于本机诊断；所有产品写操作均走所属对话的消息或卡片动作。
 新增业务能力应在主 Agent 能力定义中注册工具，并将处理逻辑放到独立业务模块，复用对话/记忆/任务记录。

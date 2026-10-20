@@ -40,4 +40,4 @@
 - 真实样本在 data/samples/<caseId>/input.*，唯一案例索引为 data/samples/invoice-cases.json；索引中的文件路径相对于项目根目录。
 - tests/fixtures/ 只存固定的合成或脱敏样本；已有本地演示页，二维码回归仍使用 data/samples/ 中的本机原图。
 - 新任务截图、回读和轨迹放 data/artifacts/<taskId>/；旧截图在 data/artifacts/legacy/<caseId>/，既有云端观察仍在 data/lexmount-observations/。
-- 自动化测试输出放 test-results/，专项排查产物放 diagnostics/。真实样本、结果、凭据和包含真实链接的案例文档不进入版本控制。
+- 自动化测试输出放 test-results/，专项排查产物放 diagnostics/，两者与 data/logs/ 由 tools/cleanup.mjs 自动清理（同类保留 3 份、7 天，数据库备份保留 3 份），需要长期保留的证据不要只放在这里。真实样本、结果、凭据和包含真实链接的案例文档不进入版本控制。

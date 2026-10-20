@@ -18,7 +18,7 @@ test('pinned Harness Windows patch is idempotent and refuses changed spawn code'
   assert.equal(await patchHarnessWindows(), false);
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   for (const script of ['postinstall', 'predev', 'prestart'])
-    assert.equal(manifest.scripts[script], 'node tools/patch-harness-windows.mjs');
+    assert.match(manifest.scripts[script], /^node tools\/patch-harness-windows\.mjs(?: && |$)/);
 });
 
 test('actual SDK transport launches hidden with piped stdio and closes its child', async (t) => {

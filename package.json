@@ -8,18 +8,20 @@
   },
   "scripts": {
     "postinstall": "node tools/patch-harness-windows.mjs",
-    "predev": "node tools/patch-harness-windows.mjs",
+    "predev": "node tools/patch-harness-windows.mjs && node tools/cleanup.mjs",
     "dev": "node src/server/index.mjs --dev",
     "build": "vite build",
-    "prestart": "node tools/patch-harness-windows.mjs",
+    "prestart": "node tools/patch-harness-windows.mjs && node tools/cleanup.mjs",
     "start": "node src/server/index.mjs",
+    "pretest": "node tools/cleanup.mjs",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "test:harness": "node tests/harness-live.mjs",
     "test:chat": "node tests/chat-live.mjs",
     "browser:install": "playwright install chromium",
     "check:adapters": "node tools/check-adapters.mjs",
-    "check:publish": "node tools/check-publish.mjs --staged"
+    "check:publish": "node tools/check-publish.mjs --staged",
+    "cleanup": "node tools/cleanup.mjs"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.1-alpha.4",

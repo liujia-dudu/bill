@@ -67,7 +67,9 @@ try {
     server.once('error', reject);
     server.listen(config.port, '127.0.0.1', resolve);
   });
-  console.log(`Invoice Desk running at http://127.0.0.1:${config.port} (real submission disabled)`);
+  console.log(
+    `Invoice Desk running at http://127.0.0.1:${config.port} (submission only after chat confirmation)`,
+  );
   let closing = false;
   const shutdown = async () => {
     if (closing) return;

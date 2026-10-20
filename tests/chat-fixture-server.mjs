@@ -67,6 +67,9 @@ const fakeRun = async ({ prompt, dispatch, onRequest, sessionKey }) => {
     await dispatch('attachment_read', { inputId: attachment.id });
     await dispatch('invoice_start', { inputId: attachment.id, sourceQuote: text });
     response = '已开始处理。';
+  } else if (text.includes('放弃这次')) {
+    await dispatch('task_decide', { decision: 'abandon', sourceQuote: '放弃这次' });
+    response = '已放弃，页面已关闭，没有提交。';
   } else if (text.includes('记住以后称呼')) {
     await dispatch('memory_remember', {
       kind: 'preference',

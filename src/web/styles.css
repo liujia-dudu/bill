@@ -511,7 +511,17 @@ p {
   background: #fbf5e7;
   color: #ab955d;
 }
-.task-status.failed {
+.task-status.submitting,
+.task-status.submitted_unverified {
+  background: #fbf5e7;
+  color: #ab955d;
+}
+.task-status.submitted {
+  background: #e6f2e0;
+  color: #5f8a4c;
+}
+.task-status.failed,
+.task-status.submit_failed {
   background: #fcf0ed;
   color: #ac7d6b;
 }
@@ -522,6 +532,30 @@ p {
   font-size: 11px;
   color: #809871;
   margin: 12px 0;
+}
+.task-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: #809871;
+  margin: -4px 0 12px;
+  min-width: 0;
+}
+.task-entry span {
+  flex: none;
+}
+.task-entry a {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #5f8a4c;
+}
+.task-entry .text-button {
+  flex: none;
+  margin: 0;
 }
 .task-actions {
   display: flex;
@@ -634,6 +668,28 @@ p {
   font-size: 9px;
   color: #abb69b;
   margin-top: 14px;
+}
+.submission-fact.submitted {
+  color: #5f8a4c;
+}
+.review-countdown {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 15px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: #fbf5e7;
+  color: #8e7a48;
+  font-size: 11px;
+}
+.review-countdown strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.review-countdown.expired {
+  background: #f3f3ef;
+  color: #9a9a8f;
 }
 .text-button {
   border: 0;

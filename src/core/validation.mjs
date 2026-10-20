@@ -133,7 +133,7 @@ export function entryRule(raw, { mainFrame = true } = {}) {
     return {
       status: 'unsupported_browser',
       reasonCode: 'wechat_oauth_required',
-      message: '此流程进入微信网页授权，请在微信内办理',
+      message: '此流程需要微信内授权，本环境无法办理；请在微信中扫码开具',
       source: 'redirect_rule',
     };
   return null;

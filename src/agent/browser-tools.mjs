@@ -530,18 +530,11 @@ export class InvoiceBrowserTools {
           '本页还有未核对的必填项：' + unverified.map((c) => c.label || c.placeholder).join('、'),
         );
     }
-    // Block all new document requests during an unknown local step. The shared
-    // network guard separately rejects unknown XHR/fetch and submission routes.
-    const route = async (r) =>
-      r.request().isNavigationRequest() ? r.abort('blockedbyclient') : r.fallback();
     await this.capture(`step-${this.stage}`);
-    await this.page.route('**/*', route);
-    try {
-      await target.locator.click();
-      await this.page.waitForTimeout(250);
-    } finally {
-      await this.page.unroute('**/*', route);
-    }
+    await target.locator.click();
+    // The next step may be a new document; let it load like a normal browser would.
+    await this.page.waitForTimeout(250);
+    await this.page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
     this.trace.push({ kind: 'local_navigation', text: target.control.text, stage: this.stage });
     this.stage++;
     this.refs.clear();

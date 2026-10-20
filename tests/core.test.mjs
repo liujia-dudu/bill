@@ -83,44 +83,25 @@ test('precise entry rules and unsafe URL rejection', () => {
   assert.equal(parseWebUrl('https://example.com/a').hostname, 'example.com');
   assert.notEqual(digest('https://example.com?a=1&b=2'), digest('https://example.com?b=2&a=1'));
 });
-test('guard permits reviewed reads and rejects invoice writes, even through GET', () => {
-  const base = {
-    url: 'https://cube-inv.jcsk100.com/api/cube-ar/openApi/saveBillingCode',
-    method: 'POST',
-    resourceType: 'fetch',
-  };
-  assert.equal(requestAllowed(base), false);
-  assert.equal(requestAllowed({ ...base, method: 'GET' }), false);
-  assert.equal(
-    requestAllowed({
-      ...base,
-      url: 'https://cube-inv.jcsk100.com/api/cube-ar/openApi/getInvoiceHead',
-      postData: JSON.stringify({ name: '完整名称' }),
-    }),
-    true,
-  );
-  assert.equal(
-    requestAllowed({
-      ...base,
-      url: 'https://cube-inv.jcsk100.com/api/cube-ar/openApi/getInvoiceHead',
-      postData: JSON.stringify({ name: '名称', submit: true }),
-    }),
-    false,
-  );
-  assert.equal(
-    requestAllowed({
-      ...base,
-      url: 'https://cube-inv.jcsk100.com/api/cube-ar/arInvoicePre/billingCode',
-      method: 'GET',
-    }),
-    true,
-  );
-  assert.equal(
-    requestAllowed({ ...base, url: 'https://example.com/api/read', method: 'GET' }),
-    false,
-  );
+test('guard lets page requests through like a normal browser, refusing only intranet and the probe', () => {
+  for (const [url, method] of [
+    ['https://cube-inv.jcsk100.com/api/cube-ar/openApi/getInvoiceHead', 'POST'],
+    ['https://invoice.meituan.com/api/invoice/process/queryInvoiceDetailByInvoiceId', 'POST'],
+    ['https://example.com/api/read', 'GET'],
+    ['https://catfront.dianping.com/api/log', 'POST'],
+  ])
+    assert.equal(requestAllowed({ url, method, resourceType: 'xhr' }), true, url);
+  for (const url of [
+    'http://127.0.0.1:3180/api/tasks',
+    'http://192.168.1.1/',
+    'http://localhost/',
+    'https://example.com/api/__invoice_guard_probe__',
+    'file:///C:/Windows/win.ini',
+  ])
+    assert.equal(requestAllowed({ url, method: 'GET', resourceType: 'fetch' }), false, url);
+  assert.equal(requestAllowed({ url: 'https://example.com/', demo: true }), false);
 });
-test('browser guards stop submit button, Enter, native form submit and network writes', async () => {
+test('page guard stops our own submit click and Enter, but leaves page scripts alone', async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext();
@@ -137,27 +118,19 @@ test('browser guards stop submit button, Enter, native form submit and network w
     await page.locator('#submit').click();
     await page.locator('#value').press('Enter');
     assert.equal(await page.evaluate(() => window.count), 0);
-    assert.equal(
-      await page.evaluate(() => {
-        try {
-          document.querySelector('form').submit();
-          return false;
-        } catch {
-          return true;
-        }
-      }),
-      true,
-    );
+    // The page's own scripted behaviour is not ours to second-guess.
+    await page.evaluate(() => document.querySelector('#submit').click());
+    assert.ok((await page.evaluate(() => window.count)) > 0);
   } finally {
     await browser.close();
   }
 });
-test('review requires current token, screenshot and matching fields; never claims actual submission', async () => {
+test('submission needs a live reviewed page, a screenshot and matching fields', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'invoice-review-'));
   const store = new Store(dir);
   const runner = new Runner(store, { root: ROOT, dataDir: dir });
   try {
-    await assert.rejects(runner.create({ mode: 'execute' }, randomUUID()), /禁止真实提交/);
+    await assert.rejects(runner.create({ mode: 'execute' }, randomUUID()), /未经用户确认/);
     await assert.rejects(runner.create({ source: 'demo' }, randomUUID()), /请选择二维码/);
     const profile = store.saveProfile(DEMO_PROFILE);
     const task = store.createTask(
@@ -166,19 +139,26 @@ test('review requires current token, screenshot and matching fields; never claim
     );
     store.patchTask(task.id, {
       status: 'awaiting_review',
-      reviewToken: 'token',
+      reviewDeadline: new Date(Date.now() + 60000).toISOString(),
       fieldChecks: [{ matches: true }],
       artifacts: [{ name: 'pre-submit.png' }],
     });
-    await assert.rejects(runner.review(task.id, { token: 'old', approved: true }), /失效/);
-    await assert.rejects(runner.review(task.id, { token: 'token', approved: true }), /证据不完整/);
-    await mkdir(path.join(dir, 'artifacts', task.id), { recursive: true });
-    await writeFile(path.join(dir, 'artifacts', task.id, 'pre-submit.png'), 'test-evidence');
-    const approved = await runner.review(task.id, { token: 'token', approved: true });
-    assert.equal(approved.status, 'simulated_success');
-    assert.equal(approved.actualSubmitted, false);
-    assert.equal((await runner.review(task.id, { token: 'token', approved: true })).id, task.id);
+    // A stored awaiting_review status alone (e.g. after a restart) has no page to submit.
+    await assert.rejects(runner.submit(task.id), /确认已失效/);
+    let closed = 0;
+    runner.live.set(task.id, {
+      handle: { close: async () => (closed++, { status: 'closed' }) },
+      timer: null,
+    });
+    await assert.rejects(runner.submit(task.id), /不完整/);
+    assert.equal(store.get('tasks', task.id).status, 'awaiting_review');
+    assert.equal(store.get('tasks', task.id).actualSubmitted, false);
+    store.patchTask(task.id, { status: 'cancelled' });
+    await runner.waitForTask(task.id);
+    assert.equal(closed, 1);
+    assert.equal(runner.live.size, 0);
   } finally {
+    await runner.close();
     store.close();
   }
 });

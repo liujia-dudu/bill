@@ -27,8 +27,15 @@ import './styles.css';
 const STATUS = {
   queued: '等待处理',
   running: '正在处理',
-  awaiting_review: '待核对',
+  awaiting_review: '待确认',
   simulated_success: '已核对',
+  submitting: '正在提交',
+  submitted: '已提交',
+  submitted_unverified: '已提交待核实',
+  submit_failed: '未提交',
+  abandoned: '已放弃',
+  review_expired: '确认超时',
+  corrected: '已重填',
   observed: '检查完成',
   needs_changes: '需要修改',
   needs_user_input: '待补充',
@@ -142,7 +149,7 @@ function App() {
   }, [messages.length, messages.at(-1)?.text]);
   useEffect(() => {
     const waiting = messages.filter((m) => m.task?.status === 'awaiting_review').length;
-    document.title = `${waiting ? '[' + waiting + ' 待核对] ' : ''}秒开票`;
+    document.title = `${waiting ? '[' + waiting + ' 待确认] ' : ''}秒开票`;
   }, [messages]);
   const newChat = () => {
     currentRef.current = null;
@@ -612,6 +619,7 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
   const screenshots = t.artifacts || [];
   const active =
     screenshots.find((a) => a.name === image) ||
+    screenshots.find((a) => a.name === 'post-submit.png') ||
     screenshots.find((a) => a.name === 'pre-submit.png') ||
     screenshots[0];
   return (
@@ -633,6 +641,7 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
           <span>{t.profile.title}</span>
         </div>
       ) : null}
+      {/^https?:\/\//.test(t.url || '') ? <EntryLink url={t.url} /> : null}
       {active ? (
         <div className="task-evidence">
           <div className="screenshot-tabs">
@@ -676,28 +685,7 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
           ))}
         </details>
       ) : null}
-      {t.status === 'awaiting_review' ? (
-        <div className="task-actions">
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() =>
-              onAction({ kind: 'review', taskId: t.id, token: t.reviewToken, approved: false })
-            }
-          >
-            需要修改
-          </button>
-          <button
-            disabled={busy}
-            onClick={() =>
-              onAction({ kind: 'review', taskId: t.id, token: t.reviewToken, approved: true })
-            }
-          >
-            <Check size={14} />
-            填写正确
-          </button>
-        </div>
-      ) : null}
+      {t.status === 'awaiting_review' ? <ReviewCountdown deadline={t.reviewDeadline} /> : null}
       {['running', 'queued'].includes(t.status) ? (
         <button
           className="text-button"
@@ -725,10 +713,55 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
           {t.modelCalls || 0} 次
         </p>
       </details>
-      {t.simulation ? (
-        <small className="submission-fact">未实际提交，平台受理未验证。</small>
+      {t.actualSubmitted === true ? (
+        <small className="submission-fact submitted">已真实提交到开票平台。</small>
+      ) : t.mode === 'dry_run' || t.simulation ? (
+        <small className="submission-fact">未提交。</small>
       ) : null}
     </section>
+  );
+}
+function EntryLink({ url }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div className="task-entry">
+      <span>开票页面</span>
+      <a href={url} target="_blank" rel="noreferrer noopener" title={url}>
+        {url}
+      </a>
+      <button type="button" className="text-button" onClick={copy}>
+        {copied ? '已复制' : '复制'}
+      </button>
+    </div>
+  );
+}
+function ReviewCountdown({ deadline }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const left = Math.max(0, Math.floor(((deadline ? Date.parse(deadline) : now) - now) / 1000));
+  return (
+    <div className={`review-countdown${left ? '' : ' expired'}`}>
+      <strong>
+        {left ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : '已超时'}
+      </strong>
+      <span>
+        {left
+          ? '内在对话里回复：确认提交 / 指出要改的地方 / 放弃'
+          : '页面即将关闭，回复“重来”可重新填写'}
+      </span>
+    </div>
   );
 }
 createRoot(document.getElementById('root')).render(<App />);

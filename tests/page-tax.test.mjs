@@ -80,6 +80,33 @@ test('page lookup fills missing tax, saves provenance, and finishes without subm
     assert.equal(saved.taxSource.taskId, e.task.id);
     assert.equal(e.store.get('tasks', e.task.id).profile.revision, saved.revision);
     assert.equal(e.tools.profile.revision, saved.revision);
+    const notices = () =>
+      e.store
+        .messages(e.store.get('tasks', e.task.id).conversationId)
+        .filter((m) => m.kind === 'profile').length;
+    assert.equal(notices(), 1);
+    // A later task whose saved tax already matches the page: no re-save, no notice.
+    const again = e.store.createTask(
+      {
+        profile: saved,
+        profileId: saved.id,
+        conversationId: e.store.get('tasks', e.task.id).conversationId,
+        mode: 'dry_run',
+        source: 'input',
+      },
+      crypto.randomUUID(),
+    );
+    e.store.patchTask(again.id, { status: 'running' });
+    const evidence = { kind: 'invoice_page', title: saved.title, taxId: saved.taxId };
+    const unchanged = e.store.savePageTax(again.id, {
+      title: saved.title,
+      taxId: saved.taxId,
+      source: evidence,
+    });
+    assert.equal(unchanged.revision, saved.revision);
+    assert.equal(e.store.get('profiles', e.saved.id).revision, saved.revision);
+    assert.equal(e.store.get('tasks', again.id).taxLookup.status, 'verified');
+    assert.equal(notices(), 1);
     await access(path.join(e.directory, 'company-query.png'));
     await e.tools.fill({
       elementRef: await e.ref((c) => c.stableId === 'email'),

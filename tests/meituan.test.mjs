@@ -22,72 +22,25 @@ const query = {
 const asset =
   'https://s3.meituan.net/static-prod01/com.sankuai.fsp.fe.feinvoice-files/static/build/js/invoice.1234567890abcdef.js';
 
-test('Meituan QR status read is bound to the exact original receipt entry and complete desktop payload', () => {
-  assert.equal(requestAllowed(query), true);
-  assert.equal(requestAllowed({ ...query, resourceType: 'fetch' }), true);
-  const forbidden = [
-    { ...query, url: endpoint.replace('queryReceiptQrCode', 'applyReceiptCodeInvoice') },
-    { ...query, url: endpoint.replace('queryReceiptQrCode', 'applyInvoiceElec') },
-    { ...query, url: endpoint.replace('queryReceiptQrCode', 'submitBatchInvoice') },
-    { ...query, url: endpoint.replace('queryReceiptQrCode', 'sendEmailByInvoiceId') },
-    { ...query, url: endpoint.replace('queryReceiptQrCode', 'queryInvoiceDetailByInvoiceId') },
-    { ...query, method: 'GET' },
-    { ...query, resourceType: 'document' },
-    { ...query, demo: true },
-    { ...query, url: endpoint + '?apply=true' },
-    { ...query, url: endpoint + '#submit' },
-    { ...query, url: endpoint.replace('https:', 'http:') },
-    { ...query, url: endpoint.replace('invoice.meituan.com', 'invoice.meituan.com.evil.invalid') },
-    { ...query, url: endpoint.replace('invoice.meituan.com', 'invoice.meituan.com:444') },
-    { ...query, entryUrl: undefined },
-    { ...query, entryUrl: entryUrl + '&submit=true' },
-    { ...query, entryUrl: entryUrl + '&id=00000000-0000-0000-0000-000000000002' },
-    { ...query, entryUrl: entryUrl.replace('#/eInvoice?', '#/other?') },
-    { ...query, entryUrl: entryUrl.replace('zhineng_shouyin_xiaopiaoma', 'other') },
-    { ...query, entryUrl: entryUrl.replace('invoice.html#', 'invoice.html?apply=true#') },
-    { ...query, postData: '{bad' },
-    { ...query, postData: 'null' },
-    {
-      ...query,
-      postData: JSON.stringify({ ...payload, url: entryUrl.replace('000001', '000002') }),
-    },
-    { ...query, postData: JSON.stringify({ ...payload, apply: true }) },
-    { ...query, postData: JSON.stringify({ ...payload, identifyToken: 'unreviewed-token' }) },
-    { ...query, postData: JSON.stringify({ ...payload, appChannel: 'unreviewed-channel' }) },
-    { ...query, postData: JSON.stringify({ ...payload, env: 2 }) },
-    { ...query, postData: JSON.stringify({ ...payload, env: '3' }) },
-    { ...query, postData: JSON.stringify({ url: entryUrl, appChannel: '', env: 3 }) },
-  ];
-  for (const request of forbidden) assert.equal(requestAllowed(request), false);
-});
+const detail = 'https://invoice.meituan.com/api/invoice/process/queryInvoiceDetailByInvoiceId';
 
-test('fetch-loaded static assets are restricted to the reviewed receipt source and hashed paths', () => {
-  const base = { url: asset, method: 'GET', resourceType: 'fetch', entryUrl };
-  assert.equal(requestAllowed(base), true);
-  assert.equal(
-    requestAllowed({
-      ...base,
-      url: asset.replace('/js/invoice.', '/css/invoice.').replace('.js', '.css'),
-      resourceType: 'xhr',
-    }),
-    true,
-  );
+test('Meituan page requests pass like a normal browser; offline fixtures stay offline', () => {
   for (const request of [
-    { ...base, method: 'POST' },
-    { ...base, postData: '{}' },
-    { ...base, demo: true },
-    { ...base, entryUrl: 'https://example.com/invoice' },
-    { ...base, url: asset + '?submit=true' },
-    { ...base, url: asset.replace('s3.meituan.net', 's3.meituan.net.evil.invalid') },
-    { ...base, url: asset.replace('1234567890abcdef', 'unhashed') },
-    { ...base, url: 'https://s3.meituan.net/api/submit.js' },
-    { ...base, url: 'https://s3.meituan.net/unknown/config.json' },
-    { ...base, url: 'https://invoice.meituan.com/api/unknown/read' },
+    query,
+    { ...query, url: detail },
+    { url: asset, method: 'GET', resourceType: 'fetch' },
+    {
+      url: 'https://s3.meituan.net/v1/mss_x/thunders/prod/mt-invoice-result-tips/source/index.json',
+      method: 'GET',
+      resourceType: 'xhr',
+    },
+    { url: 'https://catfront.dianping.com/api/log', method: 'POST', resourceType: 'xhr' },
   ])
-    assert.equal(requestAllowed(request), false);
+    assert.equal(requestAllowed(request), true, request.url);
+  assert.equal(requestAllowed({ ...query, demo: true }), false);
 });
 
-test('guard lets the page read QR state and classify an existing invoice, without permitting application', async () => {
+test('the issued-invoice page loads its detail reads normally, while our own apply click is stopped', async () => {
   const browser = await chromium.launch({ headless: true });
   const received = [];
   const blocked = [];
@@ -96,8 +49,7 @@ test('guard lets the page read QR state and classify an existing invoice, withou
     const register = context.route.bind(context);
     context.route = (pattern, callback) =>
       register(pattern, (route) => {
-        // Fulfill only requests that the real guard explicitly allows. No
-        // synthetic page or API test reaches Meituan's servers.
+        // Fulfil requests the real guard lets through; nothing reaches Meituan.
         route.continue = () => {
           const request = route.request();
           received.push(new URL(request.url()).pathname);
@@ -105,6 +57,11 @@ test('guard lets the page read QR state and classify an existing invoice, withou
             return route.fulfill({
               contentType: 'application/json',
               body: JSON.stringify({ code: 200, data: { alreadyIssued: true, amount: 2913 } }),
+            });
+          if (request.url() === detail)
+            return route.fulfill({
+              contentType: 'application/json',
+              body: JSON.stringify({ code: 200, data: { invoiceNo: '26112000000000000000' } }),
             });
           if (request.url() === asset)
             return route.fulfill({ contentType: 'text/javascript', body: '/* synthetic asset */' });
@@ -128,42 +85,33 @@ test('guard lets the page read QR state and classify an existing invoice, withou
           ]).then(async ([asset,read])=>{
             const response=await read.json();
             document.querySelector('#state').textContent=response.data.alreadyIssued?'查看发票 2913 元':'待填写';
+            return fetch(${JSON.stringify(detail)}, {method:'POST',body:'{}'});
+          }).then((r)=>r.json()).then((d)=>{
+            document.querySelector('#state').textContent+=' 发票号码 '+d.data.invoiceNo;
+          }).catch(()=>{
+            document.querySelector('#state').textContent+=' 网络异常, 请检查您的网络设置';
           });</script>`,
       });
     });
     await installGuard(context, { entryUrl, onBlocked: (record) => blocked.push(record) });
     await page.goto(entryUrl);
     await page.waitForFunction(() =>
-      document.querySelector('#state').textContent.includes('查看发票'),
+      document.querySelector('#state').textContent.includes('发票号码'),
     );
+    const text = await page.locator('#state').textContent();
+    assert.ok(!text.includes('网络异常'), text);
     assert.equal(classifyPage(await observePage(page)).status, 'already_issued');
     await page.locator('#apply').click();
     assert.equal(await page.evaluate(() => window.applicationCount), 0);
-    assert.equal(
-      await page.evaluate(async (url) => {
-        try {
-          await fetch(url.replace('queryReceiptQrCode', 'applyReceiptCodeInvoice'), {
-            method: 'POST',
-            body: '{}',
-          });
-          return false;
-        } catch {
-          return true;
-        }
-      }, endpoint),
-      true,
-    );
     assert.ok(received.includes('/api/invoice/process/queryReceiptQrCode'));
-    assert.ok(!received.includes('/api/invoice/process/applyReceiptCodeInvoice'));
-    assert.ok(
-      blocked.some((record) => record.path === '/api/invoice/process/applyReceiptCodeInvoice'),
-    );
+    assert.ok(received.includes('/api/invoice/process/queryInvoiceDetailByInvoiceId'));
+    assert.deepEqual(blocked, []);
   } finally {
     await browser.close();
   }
 });
 
-test('a service error caused by unknown blocked API reads records the guard cause and does not invoke filling', async () => {
+test('a real service error from the page is reported as a page error and does not invoke filling', async () => {
   await mkdir(path.join(ROOT, 'test-results'), { recursive: true });
   const directory = await mkdtemp(path.join(ROOT, 'test-results', 'meituan-guard-error-'));
   const browser = await chromium.launch({ headless: true });
@@ -172,11 +120,14 @@ test('a service error caused by unknown blocked API reads records the guard caus
     const open = async (_engine, { onSession }) => {
       const context = await browser.newContext();
       const page = await context.newPage();
+      await page.route('https://invoice.meituan.com/api/unreviewed/read', (route) =>
+        route.fulfill({ status: 500, body: 'error' }),
+      );
       await page.route('https://invoice.meituan.com/invoice.html', (route) =>
         route.fulfill({
           contentType: 'text/html; charset=utf-8',
           body: `<p id="state">加载中</p><input style="display:none">
-          <script>fetch('/api/unreviewed/read').catch(()=>{
+          <script>fetch('/api/unreviewed/read').then((r)=>{ if(!r.ok) throw r; }).catch(()=>{
             document.querySelector('#state').textContent='网络异常, 请检查您的网络设置 提示 服务出错！请稍后再试！';
           });</script>`,
         }),
@@ -194,11 +145,10 @@ test('a service error caused by unknown blocked API reads records the guard caus
       };
     };
     prepared = await prepareInvoiceBrowser({ engine: 'normal', url: entryUrl, directory, open });
-    assert.equal(prepared.state.reasonCode, 'network_read_blocked');
-    assert.ok(prepared.state.message.includes('安全拦截'));
+    assert.equal(prepared.state.reasonCode, 'page_error');
     const evidence = JSON.parse(await readFile(path.join(directory, 'engine-check.json'), 'utf8'));
     assert.equal(evidence.attempts.length, 1);
-    assert.equal(evidence.attempts[0].state.reasonCode, 'network_read_blocked');
+    assert.equal(evidence.attempts[0].state.reasonCode, 'page_error');
     const observation = {
       frames: [
         {

@@ -105,8 +105,12 @@ try {
   assert.ok(ready.modelCalls > 0);
   assert.equal(ready.executionSource, 'agent');
   assert.equal(ready.actualSubmitted, false);
-  await runner.review(task.id, { token: ready.reviewToken, approved: true });
-  assert.equal(store.require('tasks', task.id).status, 'simulated_success');
+  // The reviewed page stays open for the chat decision; this live check only abandons it.
+  assert.ok(runner.live.has(task.id));
+  runner.abandon(task.id);
+  await runner.waitForTask(task.id);
+  assert.equal(store.require('tasks', task.id).status, 'abandoned');
+  assert.equal(runner.live.has(task.id), false);
   results.push({
     name: 'runner-and-review',
     passed: true,

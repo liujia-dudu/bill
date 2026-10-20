@@ -221,7 +221,10 @@ export async function observePage(page) {
 export function classifyPage(observation) {
   const text = observation.frames.map((frame) => frame.innerText || frame.contentText).join('\n');
   if (/发票已开具|开票成功|已开票|发票代码[\s\S]*发票号码|下载发票|查看发票/.test(text))
-    return { status: 'already_issued', message: '页面显示已有发票，已停止新的填写申请' };
+    return {
+      status: 'already_issued',
+      message: '页面显示这笔订单已开过发票，已停止重复填写；如确需重开请先核对上一条记录',
+    };
   if (/发票已提交|申请已提交|已申请开票|开票申请已受理/.test(text))
     return { status: 'already_submitted', message: '页面显示已有开票申请，已停止新的填写申请' };
   if (/请在微信|微信客户端|请使用微信/.test(text))

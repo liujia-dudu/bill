@@ -68,7 +68,9 @@ test('shared profile memory and one-task overrides stay separate across conversa
     assert.equal(e.store.get('profiles', saved.profile.id).title, '张三');
     const input = e.chat.attachments.fromUrl(a.id, 'https://example.com/invoice');
     const observed = [];
+    const cancelled = [];
     e.chat.runner = {
+      cancel: (taskId) => cancelled.push(taskId),
       create: async (body) => {
         observed.push(body);
         return e.store.createTask(
@@ -93,6 +95,8 @@ test('shared profile memory and one-task overrides stay separate across conversa
       sourceQuote: startText,
     });
     assert.equal(observed[1].profileId, saved.profile.id);
+    // The second entry replaces the first, still-queued task.
+    assert.equal(cancelled.length, 1);
   } finally {
     await e.close();
   }
@@ -116,7 +120,15 @@ test('attachments, task controls and approval cannot cross conversation boundari
     );
     await assert.rejects(e.chat.action(b.id, { kind: 'cancel_task', taskId: task.id }), /不属于/);
     await assert.rejects(
-      e.chat.action(b.id, { kind: 'review', taskId: task.id, token: 'x', approved: true }),
+      e.chat.action(a.id, { kind: 'review', taskId: task.id, token: 'x', approved: true }),
+      /未知操作/,
+    );
+    await assert.rejects(
+      e.chat.dispatch(b.id, user(e.store, b.id, '确认提交'), 'task_decide', {
+        taskId: task.id,
+        decision: 'submit',
+        sourceQuote: '确认提交',
+      }),
       /不属于/,
     );
     assert.throws(

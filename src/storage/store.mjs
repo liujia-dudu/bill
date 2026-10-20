@@ -29,6 +29,22 @@ export class Store extends EventEmitter {
           message: '服务重启，任务已暂停；请重新准备',
           finishedAt: now(),
         });
+      else if (task.status === 'awaiting_review')
+        // The reviewed page lived in the previous process; it cannot be submitted now.
+        this.patchTask(task.id, {
+          status: 'review_expired',
+          phase: 'finished',
+          reviewStatus: 'expired',
+          reviewToken: null,
+          message: '服务重启，待确认的页面已关闭，未提交。回复“重来”可重新填写。',
+        });
+      else if (task.status === 'submitting')
+        this.patchTask(task.id, {
+          status: 'submitted_unverified',
+          phase: 'finished',
+          actualSubmitted: true,
+          message: '提交过程中服务重启，无法确认是否已提交；请勿重复提交，请自行核对',
+        });
     for (const conversation of this.list('conversations')) {
       if (conversation.status === 'running' || conversation.deleting)
         this.write('conversations', {
@@ -211,6 +227,12 @@ export class Store extends EventEmitter {
     if (profile.taxId && profile.taxId !== taxId)
       throw new AppError('页面税号与原资料冲突，请人工核对', 409, 'tax_conflict');
     const taxSource = { ...source, taskId, conversationId: task.conversationId };
+    if (profile.taxId === taxId) {
+      // Page confirms the saved value: keep the evidence on the task only;
+      // the profile is unchanged, so neither re-save nor notify.
+      this.patchTask(taskId, { taxLookup: { status: 'verified', source: taxSource } });
+      return profile;
+    }
     let saved;
     if (task.temporaryProfile) {
       // A one-task override must never silently become a shared company profile.

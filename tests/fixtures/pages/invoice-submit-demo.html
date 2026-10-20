@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>青禾小馆 · 提交核对（合成）</title>
+  </head>
+  <body>
+    <h1>填写开票信息</h1>
+    <p id="amount">¥ 268.00</p>
+    <label>发票抬头 <input id="title" name="title" required /></label>
+    <label>收票邮箱 <input id="email" name="email" type="email" required /></label>
+    <div id="after"></div>
+    <button type="button" id="submit">提交开票</button>
+    <script>
+      window.submitted = 0;
+      const mode = new URLSearchParams(location.search).get('mode') || 'success';
+      const send = () =>
+        fetch('/submit-endpoint', { method: 'POST', body: '{}' }).then(() =>
+          fetch('/submit-status').then((response) => response.json()),
+        );
+      const done = () =>
+        send().then(() => {
+          document.querySelector('#after').textContent = '开票申请已提交';
+          document.querySelector('#submit').remove();
+        });
+      document.querySelector('#submit').onclick = () => {
+        window.submitted++;
+        if (mode === 'confirm') {
+          if (confirm('确认提交这张发票？')) done();
+        } else if (mode === 'fields') {
+          document.querySelector('#after').innerHTML =
+            '<label>补充电话 <input id="phone" name="phone" /></label>';
+        } else if (mode === 'dialog') {
+          const box = document.createElement('div');
+          box.className = 'van-dialog';
+          box.innerHTML =
+            '<p>确认开票？</p><button type="button">取消</button><button type="button">确定</button>';
+          box.querySelectorAll('button')[1].onclick = () => {
+            box.remove();
+            done();
+          };
+          document.body.append(box);
+        } else if (mode === 'silent') {
+          window.submitted = 0;
+        } else done();
+      };
+    </script>
+  </body>
+</html>

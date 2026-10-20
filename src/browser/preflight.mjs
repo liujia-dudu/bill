@@ -54,7 +54,6 @@ export function engineRecheckReason(state) {
       'navigation_error',
       'order_not_loaded',
       'page_observation_failed',
-      'network_read_blocked',
     ].includes(state.reasonCode)
   )
     return state.reasonCode;
@@ -65,7 +64,6 @@ export async function prepareInvoiceBrowser({
   engine,
   url,
   directory,
-  companyTitle,
   open = openBrowser,
   check = () => {},
   step = (_message, fn) => fn(),
@@ -122,10 +120,8 @@ export async function prepareInvoiceBrowser({
       orderRead = watchInvoiceOrder(handle.page);
       handle.page.setDefaultTimeout(15000);
       const blocked = [];
-      await step('启用提交拦截', () =>
+      handle.guard = await step('启用提交拦截', () =>
         installGuard(handle.context, {
-          entryUrl: url,
-          companyTitle,
           onBlocked: (record) => {
             blocked.push(record);
             onBlocked({ ...record, engine: selected });
@@ -196,22 +192,6 @@ export async function prepareInvoiceBrowser({
         loadFailure ||
         (observation && pageAbnormality(observation)) ||
         null;
-      if (
-        ['page_error', 'blank_page', 'navigation_timeout', 'order_not_loaded'].includes(
-          state?.reasonCode,
-        ) &&
-        blocked.some(
-          (record) =>
-            ['xhr', 'fetch'].includes(record.type) &&
-            /\/(?:api|rest|rpc)\//i.test(record.path) &&
-            record.path !== '/api/__invoice_guard_probe__',
-        )
-      )
-        state = {
-          status: 'failed',
-          reasonCode: 'network_read_blocked',
-          message: '页面加载所需的未核验接口被安全拦截，已停止填写；不能据此判断商家服务故障',
-        };
       attempt.state = state;
       attempt.finalHost = observation ? new URL(observation.url).hostname : null;
       attempt.finishedAt = new Date().toISOString();

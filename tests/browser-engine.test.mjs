@@ -122,19 +122,10 @@ test('light error is closed before one guarded normal recheck; no fields are wri
     await prepared.handle.page.locator('#submit').click();
     await prepared.handle.page.locator('#name').press('Enter');
     assert.equal(await prepared.handle.page.evaluate(() => window.submissionCount), 0);
-    assert.equal(
-      await prepared.handle.page.evaluate(async () => {
-        try {
-          await fetch('https://example.com/api/submitInvoice', { method: 'POST' });
-          return false;
-        } catch {
-          return true;
-        }
-      }),
-      true,
-    );
-    assert.ok(
-      blocked.some((record) => record.engine === 'normal' && record.path === '/api/submitInvoice'),
+    // Only the guard self-check probe is refused; page requests are not filtered.
+    assert.deepEqual(
+      blocked.map((record) => record.path),
+      ['/api/__invoice_guard_probe__', '/api/__invoice_guard_probe__'],
     );
     const evidence = JSON.parse(
       await readFile(path.join(env.directory, 'engine-check.json'), 'utf8'),

@@ -44,7 +44,8 @@ export function createApp(store, config, { chatRun, taskRunner } = {}) {
       ok: true,
       version: '0.4.5',
       interface: 'conversation',
-      submissionEnabled: false,
+      submissionEnabled: true,
+      submission: 'chat_confirmed_review',
       browserConfigured: Boolean(process.env.LEXMOUNT_API_KEY && process.env.LEXMOUNT_PROJECT_ID),
       ...modelHealth(),
       taxLookup: 'invoice_page',
@@ -93,7 +94,10 @@ export function createApp(store, config, { chatRun, taskRunner } = {}) {
     chat.conversation(req.params.id);
     const task = chat.requireTask(req.params.id, req.params.taskId);
     const artifact = task.artifacts.find((item) => item.name === req.params.name);
-    if (!artifact || !/^(?:pre-submit|company-query|step-\d+)\.png$/.test(artifact.name))
+    if (
+      !artifact ||
+      !/^(?:pre-submit|post-submit|company-query|engine-check-(?:light|normal)|step-\d+)\.png$/.test(artifact.name)
+    )
       throw new AppError('截图不存在', 404);
     const file = path.join(config.dataDir, 'artifacts', task.id, artifact.name);
     try {

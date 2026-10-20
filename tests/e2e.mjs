@@ -89,28 +89,28 @@ try {
   });
   await page.locator('.draft-attachments img').waitFor();
   await send('这张帮我开发票。');
-  await page.getByRole('button', { name: '填写正确', exact: true }).waitFor({ timeout: 30000 });
+  await page.locator('.review-countdown').waitFor({ timeout: 30000 });
+  assert.equal(await page.getByRole('button', { name: '填写正确', exact: true }).count(), 0);
   await shot(page, '03-chat-invoice.png');
   const tasks = await (await fetch(base + '/api/tasks')).json();
   const task = tasks.find((t) => t.conversationId === second.id);
   assert.ok(task);
-  const illegal = await fetch(`${base}/api/conversations/${first.id}/actions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Invoice-Client': 'local-app' },
-    body: JSON.stringify({
-      kind: 'review',
-      taskId: task.id,
-      token: task.reviewToken,
-      approved: true,
-    }),
-  });
-  assert.equal(illegal.status, 403);
-  await page.getByRole('button', { name: '填写正确', exact: true }).click();
-  await page.getByText('已核对', { exact: true }).waitFor();
+  assert.equal(task.status, 'awaiting_review');
+  // Approval exists only as the user's chat reply; no card or API route can approve.
+  for (const id of [first.id, second.id]) {
+    const illegal = await fetch(`${base}/api/conversations/${id}/actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Invoice-Client': 'local-app' },
+      body: JSON.stringify({ kind: 'review', taskId: task.id, approved: true }),
+    });
+    assert.equal(illegal.status, 400);
+  }
+  await send('放弃这次');
+  await page.getByText('已放弃', { exact: true }).waitFor();
   assert.equal((await (await fetch(base + '/api/tasks')).json())[0].actualSubmitted, false);
-  report.checks.push('attachment, task card, screenshot review and cross-conversation denial');
+  report.checks.push('attachment, task card, chat-only review decision and approval-route denial');
   await page.reload();
-  await page.getByText('已核对', { exact: true }).waitFor();
+  await page.getByText('已放弃', { exact: true }).waitFor();
   report.checks.push('messages and task results survive reload');
   await page.setViewportSize({ width: 390, height: 844 });
   await shot(page, '05-mobile-chat.png');

@@ -17,6 +17,9 @@ import { observePage, classifyPage, assertInvoiceAmounts } from '../browser/obse
 import { RuleRegistry } from '../rules/registry.mjs';
 import { executeRule } from '../rules/executor.mjs';
 import { runInvoiceAgent } from '../agent/run-invoice.mjs';
+import { submitInvoice } from '../browser/submit.mjs';
+
+export const REVIEW_WINDOW_MS = 5 * 60 * 1000;
 
 export class Runner {
   constructor(store, config) {
@@ -29,6 +32,15 @@ export class Runner {
     this.activeHandle = null;
     this.agentAbort = null;
     this.idleWaiters = [];
+    // Pages kept open while the user reviews the screenshot in chat.
+    this.live = new Map();
+    this.closing = new Map();
+    this.submitting = new Map();
+    this.reviewWindowMs = config.reviewWindowMs || REVIEW_WINDOW_MS;
+    this.taskListener = (task) => {
+      if (this.live.has(task.id) && task.status !== 'awaiting_review') void this.release(task.id);
+    };
+    store.on('task', this.taskListener);
   }
   async recover() {
     for (const task of this.store.list('tasks'))
@@ -40,8 +52,9 @@ export class Runner {
       }
   }
   async create(body, key) {
+    // Real submission is never a task mode; it only follows a user's chat reply.
     if (!['dry_run', 'read_only'].includes(body.mode || 'dry_run'))
-      throw new AppError('当前版本禁止真实提交', 403, 'submission_disabled');
+      throw new AppError('不支持未经用户确认的提交模式', 403, 'submission_requires_review');
     if (typeof key !== 'string' || key.length < 8 || key.length > 100)
       throw new AppError('缺少有效请求标识');
     const existing = this.store.byRequestKey(key);
@@ -89,6 +102,13 @@ export class Runner {
       throw new AppError('等待任务过多，请稍后再试', 409, 'runner_busy');
     if (body.conversationId && this.store.require('conversations', body.conversationId).deleting)
       throw new AppError('对话正在删除', 409);
+    const correctionNotes = body.correctionNotes || [];
+    if (
+      !Array.isArray(correctionNotes) ||
+      correctionNotes.length > 5 ||
+      correctionNotes.some((note) => typeof note !== 'string' || !note.trim() || note.length > 500)
+    )
+      throw new AppError('修正说明格式不正确');
     const task = this.store.createTask(
       {
         source: 'input',
@@ -104,7 +124,10 @@ export class Runner {
         engine,
         engineRequested: engine,
         title: new URL(rawUrl).hostname,
-        coverageGaps: ['未执行真实提交，平台受理及提交校验未验证'],
+        coverageGaps: ['提交需用户在对话中确认截图后执行'],
+        ...(correctionNotes.length
+          ? { correctionNotes, correctedFrom: body.correctedFrom || null }
+          : {}),
       },
       key,
     );
@@ -151,6 +174,8 @@ export class Runner {
   }
   async waitForTask(id) {
     const started = Date.now();
+    await this.closing.get(id);
+    await this.submitting.get(id);
     while (this.store.get('tasks', id)?.status === 'running') {
       if (Date.now() - started > 30000) throw new AppError('任务仍在关闭，请稍后重试删除对话', 409);
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -227,7 +252,6 @@ export class Runner {
         engine: actualEngine,
         url: task.url,
         directory: dir,
-        companyTitle: task.profile?.type === 'enterprise' ? task.profile.title : null,
         open: this.config.openBrowser || openBrowser,
         check,
         step,
@@ -291,7 +315,10 @@ export class Runner {
         Object.assign(task.profile, saved);
         return saved;
       };
-      const route = await this.rules.select(before, task.profile, actualEngine);
+      // A user correction means the reviewed result was wrong; let Harness re-analyse.
+      const route = task.correctionNotes?.length
+        ? { source: 'agent', reason: 'user_correction' }
+        : await this.rules.select(before, task.profile, actualEngine);
       this.store.patchTask(task.id, {
         executionSource: route.source,
         routeReason: route.reason || 'verified_contract',
@@ -341,6 +368,7 @@ export class Runner {
           directory: dir,
           engine: actualEngine,
           browserTools: preparationTools,
+          corrections: task.correctionNotes,
           check,
           signal: this.agentAbort.signal,
           onProgress: (message) => this.store.event(task.id, 'agent_tool', message),
@@ -412,7 +440,7 @@ export class Runner {
       check();
       outcome = {
         status: 'awaiting_review',
-        message: '填写与核对完成，请检查截图。尚未真实提交。',
+        message: '填写与核对完成，尚未提交。请在 5 分钟内回复：确认提交 / 指出要改的地方 / 放弃。',
         reviewToken: randomUUID(),
         evidenceDigest: digest({
           profile: task.profile,
@@ -454,7 +482,12 @@ export class Runner {
       if (error.cleanup) this.store.patchTask(task.id, { cleanup: error.cleanup });
     } finally {
       orderRead?.close();
-      if (handle) {
+      const keep =
+        handle &&
+        outcome?.status === 'awaiting_review' &&
+        !this.cancelled.has(task.id) &&
+        !this.stopped;
+      if (handle && !keep) {
         this.store.event(task.id, 'closing', '保存结果并关闭浏览器');
         const cleanup = await handle.close().catch(() => ({ status: 'close_unconfirmed' }));
         this.store.patchTask(task.id, { cleanup });
@@ -514,47 +547,184 @@ export class Runner {
         path.join(dir, 'network-guard.json'),
         JSON.stringify({ blocked, actualSubmitted: false }, null, 2),
       );
+      if (keep)
+        this.live.set(task.id, {
+          handle,
+          timer: setTimeout(() => void this.expire(task.id), this.reviewWindowMs),
+        });
       this.store.patchTask(task.id, {
         ...outcome,
-        phase: 'finished',
+        phase: keep ? 'awaiting_review' : 'finished',
         timings,
         blockedRequests: blocked.length,
         finishedAt: new Date().toISOString(),
         durationMs: Math.round(performance.now() - started),
         actualSubmitted: false,
+        ...(keep
+          ? {
+              reviewReadyAt: new Date().toISOString(),
+              reviewDeadline: new Date(Date.now() + this.reviewWindowMs).toISOString(),
+            }
+          : {}),
       });
     }
   }
-  async review(id, body) {
+  release(id) {
+    const live = this.live.get(id);
+    if (!live) return this.closing.get(id);
+    this.live.delete(id);
+    clearTimeout(live.timer);
+    const closing = live.handle
+      .close()
+      .catch(() => ({ status: 'close_unconfirmed' }))
+      .then((cleanup) => {
+        if (this.store.get('tasks', id)) this.store.patchTask(id, { cleanup });
+        return cleanup;
+      })
+      .finally(() => this.closing.delete(id));
+    this.closing.set(id, closing);
+    return closing;
+  }
+  notify(task, text) {
+    const conversation =
+      task.conversationId && this.store.get('conversations', task.conversationId);
+    if (conversation && !conversation.deleting)
+      this.store.addMessage(task.conversationId, { role: 'event', kind: 'notice', text });
+  }
+  expire(id) {
+    const task = this.store.get('tasks', id);
+    if (task?.status !== 'awaiting_review') return this.release(id);
+    this.store.patchTask(id, {
+      status: 'review_expired',
+      phase: 'finished',
+      reviewStatus: 'expired',
+      reviewToken: null,
+      message: '5 分钟内没有确认，页面已关闭，未提交。回复“重来”可重新填写。',
+    });
+    this.notify(
+      task,
+      '这张截图 5 分钟内没有确认，页面已关闭，未提交。需要的话回复“重来”重新填写。',
+    );
+    return this.release(id);
+  }
+  // Only ChatService calls the decisions below, after verifying the decision
+  // comes from the user's own message in the current turn.
+  requireReview(id) {
     const task = this.store.require('tasks', id);
-    if (task.status === 'simulated_success' && body.token === task.reviewToken) return task;
-    if (task.status !== 'awaiting_review' || body.token !== task.reviewToken)
-      throw new AppError('此审核已失效，请刷新任务', 409);
+    if (task.status !== 'awaiting_review' || !this.live.has(id))
+      throw new AppError(
+        '这张截图的确认已失效（可能已超时、已处理或服务重启），请回复“重来”重新填写',
+        409,
+        'review_inactive',
+      );
+    return task;
+  }
+  async submit(id) {
+    const task = this.requireReview(id);
+    if (Date.parse(task.reviewDeadline) <= Date.now()) {
+      await this.expire(id);
+      throw new AppError(
+        '确认已超过 5 分钟，页面已关闭；请回复“重来”重新填写',
+        409,
+        'review_expired',
+      );
+    }
     if (
       !task.temporaryProfile &&
       this.store.get('profiles', task.profileId)?.revision !== task.profile?.revision
     )
-      throw new AppError('资料已更新或删除，请重新准备', 409);
-    if (body.approved !== true)
-      return this.store.patchTask(id, {
-        status: 'needs_changes',
-        message: '已标记需要修改，请更新资料后重新准备',
-        reviewedAt: new Date().toISOString(),
-        reviewStatus: 'rejected',
-      });
+      throw new AppError('资料已更新或删除，请重新填写', 409, 'profile_changed');
     if (
-      !task.artifacts.length ||
-      !task.fieldChecks.length ||
-      !existsSync(path.join(this.config.dataDir, 'artifacts', id, 'pre-submit.png')) ||
-      task.fieldChecks.some((f) => !f.matches)
+      !task.fieldChecks?.length ||
+      task.fieldChecks.some((field) => !field.matches) ||
+      !existsSync(path.join(this.config.dataDir, 'artifacts', id, 'pre-submit.png'))
     )
-      throw new AppError('证据不完整，不能记为模拟成功', 409);
-    return this.store.patchTask(id, {
-      status: 'simulated_success',
+      throw new AppError('截图或字段核对不完整，不能提交', 409, 'evidence_incomplete');
+    if (
+      this.store
+        .list('tasks')
+        .some(
+          (other) =>
+            other.id !== id &&
+            other.entryDigest === task.entryDigest &&
+            (other.actualSubmitted === true || other.status === 'submitting'),
+        )
+    )
+      throw new AppError('这个开票链接已经提交过，不能重复提交', 409, 'already_submitted_here');
+    const live = this.live.get(id);
+    this.live.delete(id);
+    clearTimeout(live.timer);
+    const patched = this.store.patchTask(id, {
+      status: 'submitting',
+      phase: 'submitting',
+      message: '已收到确认，正在提交',
       reviewStatus: 'approved',
       reviewedAt: new Date().toISOString(),
-      message: '模拟提交成功（未实际提交；平台受理未验证）',
-      actualSubmitted: false,
+      reviewToken: null,
+    });
+    const running = this.finishSubmit(id, live.handle).finally(() => this.submitting.delete(id));
+    this.submitting.set(id, running);
+    return patched;
+  }
+  async finishSubmit(id, handle) {
+    const dir = path.join(this.config.dataDir, 'artifacts', id);
+    let result;
+    try {
+      result = await submitInvoice({ page: handle.page, guard: handle.guard, directory: dir });
+    } catch (error) {
+      result = {
+        status: 'submit_failed',
+        reasonCode: error.code || 'submit_error',
+        message: `${safeMessage(error)}，未提交`,
+        actualSubmitted: false,
+      };
+    }
+    const cleanup = await handle.close().catch(() => ({ status: 'close_unconfirmed' }));
+    const task = this.store.require('tasks', id);
+    const done = this.store.patchTask(id, {
+      status: result.status,
+      phase: 'finished',
+      message: result.message,
+      reasonCode: result.reasonCode || null,
+      actualSubmitted: result.actualSubmitted === true,
+      submittedAt: result.actualSubmitted ? new Date().toISOString() : null,
+      submitRequests: result.released || 0,
+      submitDialogs: result.dialogs || 0,
+      simulation: false,
+      cleanup,
+      artifacts: result.screenshot
+        ? [
+            ...task.artifacts.filter((a) => a.name !== 'post-submit.png'),
+            { name: 'post-submit.png', label: '提交结果', capturedAt: new Date().toISOString() },
+          ]
+        : task.artifacts,
+    });
+    this.notify(done, result.message);
+    return done;
+  }
+  abandon(id, message = '已放弃，本次未提交，页面已关闭') {
+    const task = this.store.require('tasks', id);
+    if (task.status === 'review_expired') return task;
+    if (task.status !== 'awaiting_review')
+      throw new AppError('这张任务当前不在待确认状态', 409, 'review_inactive');
+    return this.store.patchTask(id, {
+      status: 'abandoned',
+      phase: 'finished',
+      reviewStatus: 'abandoned',
+      reviewToken: null,
+      message,
+    });
+  }
+  supersede(id, newTaskId) {
+    const task = this.store.require('tasks', id);
+    if (!['awaiting_review', 'review_expired', 'needs_changes'].includes(task.status)) return task;
+    return this.store.patchTask(id, {
+      status: 'corrected',
+      phase: 'finished',
+      reviewStatus: 'corrected',
+      reviewToken: null,
+      supersededBy: newTaskId,
+      message: '已按修正意见重新填写，本张未提交',
     });
   }
   async retryCleanup(id) {
@@ -564,8 +734,12 @@ export class Runner {
   }
   async close() {
     this.stopped = true;
+    this.store.off('task', this.taskListener);
     this.agentAbort?.abort();
     if (this.activeHandle) await this.activeHandle.close().catch(() => {});
     if (this.running) await new Promise((resolve) => this.idleWaiters.push(resolve));
+    await Promise.allSettled([...this.submitting.values()]);
+    await Promise.allSettled([...this.live.keys()].map((id) => this.release(id)));
+    await Promise.allSettled([...this.closing.values()]);
   }
 }

@@ -20,41 +20,18 @@ function request(operation, payload, suffix = '') {
   };
 }
 
-test('dispatcher permits only this order and exact company reads; all submission variants stay blocked', () => {
-  const order = request('toFindInvoiceByOrder', { orderId: '123456' }, '&_=1792130000000');
-  const company = request('toFindInvoiceHeader', { invoiceHeader: companyTitle });
-  assert.equal(requestAllowed(order), true);
+test('dispatcher reads pass like a normal browser; the page decides what to call', () => {
+  // Submission safety is our own click guard, not filtering the page's requests.
+  for (const value of [
+    request('toFindInvoiceByOrder', { orderId: '123456' }, '&_=1792130000000'),
+    request('toFindInvoiceHeader', { invoiceHeader: companyTitle }),
+    { ...request('toFindInvoiceHeader', { invoiceHeader: companyTitle }), method: 'POST' },
+  ])
+    assert.equal(requestAllowed(value), true, value.url);
   assert.equal(
-    requestAllowed({
-      ...order,
-      entryUrl: 'http://pos.mzdpgroup.com/mzdp_pos/inv.do?orderId=123456',
-    }),
-    true,
+    requestAllowed({ ...request('toFindInvoiceByOrder', { orderId: '1' }), demo: true }),
+    false,
   );
-  assert.equal(requestAllowed(company), true);
-  const forbidden = [
-    request('doDealUnionInvoiceOpen', { orderId: '123456' }),
-    request('submit', { orderId: '123456' }),
-    request('toFindInvoiceByOrder', { orderId: 'different' }),
-    request('toFindInvoiceByOrder', { orderId: '123456', submit: true }),
-    request('toFindInvoiceHeader', { invoiceHeader: '其他公司' }),
-    request('toFindInvoiceHeader', { invoiceHeader: companyTitle, tfn: '123' }),
-    request(
-      'toFindInvoiceHeader',
-      { invoiceHeader: companyTitle },
-      '&method=doDealUnionInvoiceOpen',
-    ),
-    request('toFindInvoiceByOrder', { orderId: '123456' }, '&submit=true'),
-    { ...company, method: 'POST' },
-    { ...company, resourceType: 'document' },
-    { ...company, companyTitle: undefined },
-    { ...order, entryUrl: 'https://example.com/invoice' },
-    { ...order, entryUrl: 'https://pos.mzdpgroup.com:444/mobile/inv/index.html?orderId=123456' },
-    { ...order, entryUrl: 'https://pos.mzdpgroup.com/unknown?orderId=123456' },
-    { ...order, url: order.url.replace('pos.mzdpgroup.com', 'pos.mzdpgroup.com.evil.example') },
-    { ...order, url: order.url.replace('https:', 'http:') },
-  ];
-  for (const value of forbidden) assert.equal(requestAllowed(value), false, value.url);
 });
 
 test('unlabelled Vant inputs and delayed div suggestions can verify page tax and amount without submission', async () => {

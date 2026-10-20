@@ -7,9 +7,9 @@ for (const rule of rules) {
     preparationReviewed(rule, variant),
   ).length;
   console.log(
-    `${rule.domain}: JSON 有效，已审核填写变体 ${reviewed}/${rule.flow.variants.length}；真实提交关闭`,
+    `${rule.domain}: JSON 有效，已审核填写变体 ${reviewed}/${rule.flow.variants.length}；规则本身不能提交，提交只在用户对话确认后执行`,
   );
 }
 if (!rules.length && !problems.length)
-  console.log('无正式网站规则；新页面由 Harness 分析，真实提交关闭');
+  console.log('无正式网站规则；新页面由 Harness 分析；提交只在用户对话确认后执行');
 process.exitCode = problems.length ? 1 : 0;

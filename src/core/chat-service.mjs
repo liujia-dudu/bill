@@ -583,7 +583,7 @@ export class ChatService {
             inputId: input.id,
             candidateIndex: args.candidateIndex || 0,
             mode: args.mode || 'dry_run',
-            engine: args.engine || 'normal',
+            engine: args.engine || 'light',
             profileId: profile?.id,
             profileRevision: profile?.revision,
             profileSnapshot: profile?.id.startsWith('temporary-') ? profile : null,

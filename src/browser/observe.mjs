@@ -172,38 +172,56 @@ export async function waitForInvoiceReady(page, orderRead) {
   }
 }
 
+// Playwright's evaluate has no timeout; light can leave it pending forever on pages it
+// renders badly, so bound each read and report it as an observation failure.
+const OBSERVE_TIMEOUT_MS = 10000;
+function evaluateWithin(frame, fn, arg) {
+  let timer;
+  return Promise.race([
+    frame.evaluate(fn, arg),
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(new AppError('网页读取超时，未能识别页面内容', 400, 'page_observation_failed')),
+        OBSERVE_TIMEOUT_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 export async function observePage(page) {
   const frames = [];
   for (const [frameIndex, frame] of page.frames().entries()) {
-    const data = await frame
-      .evaluate(() => {
-        const clean = document.body?.cloneNode(true);
-        clean?.querySelectorAll('script,style,noscript').forEach((node) => node.remove());
-        return {
-          title: document.title,
-          innerText: document.body?.innerText?.slice(0, 20000) || '',
-          contentText: clean?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 20000) || '',
-          agreements: [...document.querySelectorAll('a')]
-            .filter((node) => /协议|条款|隐私|agreement|terms/i.test(node.textContent || ''))
-            .map((node) => ({
-              text: node.textContent.trim(),
-              target: node.getAttribute('href') || '',
-            })),
-          headings: [...document.querySelectorAll('h1,h2,h3,legend,[role=heading]')].map((node) =>
-            node.textContent.trim(),
-          ),
-          selectedOptions: [...document.querySelectorAll('select')].map((node) =>
-            [...node.selectedOptions].map((option) => option.textContent.trim()),
-          ),
-        };
-      })
-      .catch(() => null);
+    const data = await evaluateWithin(frame, () => {
+      const clean = document.body?.cloneNode(true);
+      clean?.querySelectorAll('script,style,noscript').forEach((node) => node.remove());
+      return {
+        title: document.title,
+        innerText: document.body?.innerText?.slice(0, 20000) || '',
+        contentText: clean?.textContent?.replace(/\s+/g, ' ').trim().slice(0, 20000) || '',
+        agreements: [...document.querySelectorAll('a')]
+          .filter((node) => /协议|条款|隐私|agreement|terms/i.test(node.textContent || ''))
+          .map((node) => ({
+            text: node.textContent.trim(),
+            target: node.getAttribute('href') || '',
+          })),
+        headings: [...document.querySelectorAll('h1,h2,h3,legend,[role=heading]')].map((node) =>
+          node.textContent.trim(),
+        ),
+        selectedOptions: [...document.querySelectorAll('select')].map((node) =>
+          [...node.selectedOptions].map((option) => option.textContent.trim()),
+        ),
+      };
+    }).catch((error) => {
+      if (frameIndex === 0 && error.code === 'page_observation_failed') throw error;
+      return null;
+    });
     if (data)
       frames.push({
         frameIndex,
         ...data,
         controls: (
-          await frame.evaluate(inspectFields, {
+          await evaluateWithin(frame, inspectFields, {
             selector: 'input,select,textarea,button,[role=button]',
           })
         )
@@ -213,7 +231,7 @@ export async function observePage(page) {
             id: control.stableId,
             disabled: !control.enabled,
           })),
-        amounts: await frame.evaluate(inspectInvoiceAmounts),
+        amounts: await evaluateWithin(frame, inspectInvoiceAmounts),
       });
   }
   return { at: new Date().toISOString(), url: page.url(), frames };

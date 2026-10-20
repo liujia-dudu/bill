@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
@@ -323,4 +324,176 @@ test('Runner reports actual engine and routes using normal, while failures canno
       await env.browser.close();
     }
   }
+});
+
+async function refillRun(
+  t,
+  { lightError, normalError, mode = 'dry_run', cleanup, lightShotFails },
+) {
+  const env = await fixture({ light: form, normal: form }, { cleanup });
+  const open = async (engine, options) => {
+    const handle = await env.open(engine, options);
+    if (engine === 'light' && lightShotFails)
+      handle.page.screenshot = async () => {
+        throw new Error('Synthetic light screenshot failure');
+      };
+    return handle;
+  };
+  const store = new Store(env.directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: env.directory, openBrowser: open });
+  t.after(async () => {
+    await runner.close();
+    store.close();
+    await env.browser.close();
+  });
+  const profile = store.saveProfile(DEMO_PROFILE);
+  const task = store.createTask(
+    {
+      source: 'input',
+      mode,
+      engine: 'light',
+      engineRequested: 'light',
+      url,
+      profile,
+      profileId: profile.id,
+    },
+    randomUUID(),
+  );
+  runner.rules.select = async (_observation, _profile, engine) => {
+    const failure = engine === 'light' ? lightError : normalError;
+    throw new AppError(`Synthetic ${engine} stop`, 400, failure);
+  };
+  await runner.execute(task);
+  return { env, result: store.require('tasks', task.id) };
+}
+
+test('a light fill failure closes light and refills the whole page once under normal', async (t) => {
+  const { env, result } = await refillRun(t, {
+    lightError: 'stale_element',
+    normalError: 'synthetic_stop',
+  });
+  assert.deepEqual(env.order, ['open:light', 'close:light', 'open:normal', 'close:normal']);
+  assert.equal(result.engine, 'normal');
+  assert.equal(result.reasonCode, 'synthetic_stop');
+  assert.equal(result.fillFallback.trigger, 'stale_element');
+  assert.equal(result.fillFallback.cleanup.status, 'closed');
+  assert.equal(result.actualSubmitted, false);
+  const saved = JSON.parse(
+    await readFile(
+      path.join(env.directory, 'artifacts', result.id, 'light-attempt', 'fallback.json'),
+      'utf8',
+    ),
+  );
+  assert.equal(saved.to, 'normal');
+  await readFile(path.join(env.directory, 'artifacts', result.id, 'light-attempt', 'failure.png'));
+  await readFile(
+    path.join(env.directory, 'artifacts', result.id, 'light-attempt', 'observation-before.json'),
+  );
+});
+
+test('a normal refill failure is not retried again', async (t) => {
+  const { env, result } = await refillRun(t, {
+    lightError: 'agent_blocked',
+    normalError: 'agent_blocked',
+  });
+  assert.equal(env.order.filter((item) => item.startsWith('open:')).length, 2);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reasonCode, 'agent_blocked');
+});
+
+test('business and model-service failures under light do not trigger a normal refill', async (t) => {
+  for (const code of ['ambiguous_company', 'tax_conflict', 'harness_failed', 'model_turn_failed']) {
+    const { env, result } = await refillRun(t, { lightError: code, normalError: 'unexpected' });
+    assert.deepEqual(env.order, ['open:light', 'close:light'], code);
+    assert.equal(result.reasonCode, code);
+    assert.ok(!result.fillFallback);
+  }
+});
+
+test('a failed light screenshot is redone under normal', async (t) => {
+  const { env, result } = await refillRun(t, { mode: 'read_only', lightShotFails: true });
+  assert.deepEqual(env.order, ['open:light', 'close:light', 'open:normal', 'close:normal']);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.engine, 'normal');
+  assert.equal(result.fillFallback.trigger, 'screenshot_failed');
+  assert.ok(result.artifacts.some((artifact) => artifact.name === 'pre-submit.png'));
+});
+
+test('normal refill waits for light to be confirmed closed', async (t) => {
+  const { env, result } = await refillRun(t, {
+    lightError: 'stale_element',
+    normalError: 'unexpected',
+    cleanup: 'close_unconfirmed',
+  });
+  assert.deepEqual(env.order, ['open:light', 'close:light']);
+  assert.equal(result.reasonCode, 'session_cleanup_required');
+});
+
+test('a page read that never returns under light times out and rechecks with normal', async (t) => {
+  const env = await fixture({ light: form, normal: form });
+  t.after(() => env.browser.close());
+  let light;
+  const open = async (engine, options) => {
+    const handle = await env.open(engine, options);
+    if (engine === 'light') light = handle;
+    return handle;
+  };
+  // Hang only the page read, after navigation and guard checks have passed.
+  const step = (message, fn) => {
+    if (message === '识别页面与字段' && light && !light.hung) {
+      light.hung = true;
+      light.page.mainFrame().evaluate = () => new Promise(() => {});
+    }
+    return fn();
+  };
+  const directory = path.join(env.directory, 'hang');
+  await mkdir(directory, { recursive: true });
+  const prepared = await prepareInvoiceBrowser({ engine: 'light', url, directory, open, step });
+  t.after(() => prepared.handle.close());
+  assert.equal(prepared.engine, 'normal');
+  assert.deepEqual(env.order.slice(0, 3), ['open:light', 'close:light', 'open:normal']);
+  const check = JSON.parse(await readFile(path.join(directory, 'engine-check.json'), 'utf8'));
+  assert.equal(check.fallback.trigger, 'page_observation_failed');
+});
+
+test('cancel stops a step stuck on the page immediately and closes the browser', async (t) => {
+  const env = await fixture({ light: form, normal: form });
+  const open = async (engine, options) => {
+    const handle = await env.open(engine, options);
+    handle.page.mainFrame().evaluate = () => new Promise(() => {});
+    return handle;
+  };
+  const store = new Store(env.directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: env.directory, openBrowser: open });
+  t.after(async () => {
+    await runner.close();
+    store.close();
+    await env.browser.close();
+  });
+  const profile = store.saveProfile(DEMO_PROFILE);
+  const task = store.createTask(
+    {
+      source: 'input',
+      mode: 'dry_run',
+      engine: 'light',
+      engineRequested: 'light',
+      url,
+      profile,
+      profileId: profile.id,
+    },
+    randomUUID(),
+  );
+  const running = runner.execute(task);
+  while (store.require('tasks', task.id).status !== 'running' || !runner.activeHandle)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const cancelledAt = performance.now();
+  runner.cancel(task.id);
+  await running;
+  assert.ok(performance.now() - cancelledAt < 3000);
+  const result = store.require('tasks', task.id);
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.actualSubmitted, false);
+  assert.ok(env.order.includes('close:light'));
+  assert.ok(!env.order.includes('open:normal'));
 });

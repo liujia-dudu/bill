@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -12,7 +12,7 @@ import {
   validatePublicUrl,
 } from './validation.mjs';
 import { openBrowser, closeOrphan } from '../browser/session.mjs';
-import { prepareInvoiceBrowser } from '../browser/preflight.mjs';
+import { prepareInvoiceBrowser, pageAbnormality } from '../browser/preflight.mjs';
 import { observePage, classifyPage, assertInvoiceAmounts } from '../browser/observe.mjs';
 import { RuleRegistry } from '../rules/registry.mjs';
 import { executeRule } from '../rules/executor.mjs';
@@ -20,6 +20,25 @@ import { runInvoiceAgent } from '../agent/run-invoice.mjs';
 import { submitInvoice } from '../browser/submit.mjs';
 
 export const REVIEW_WINDOW_MS = 5 * 60 * 1000;
+
+// Failures that light's partial rendering can cause. Business facts, model-service
+// errors and cancellation would fail the same way under normal, so they never refill.
+const LIGHT_REFILL_CODES = new Set([
+  'agent_blocked',
+  'stale_element',
+  'invalid_element',
+  'readback_mismatch',
+  'complex_page',
+  'company_not_found',
+  'order_not_loaded',
+  'page_observation_failed',
+  'blank_page',
+  'page_error',
+  'screenshot_failed',
+]);
+// Per-attempt files moved aside so the normal refill starts from a clean task directory.
+const ATTEMPT_FILE =
+  /^(?:step-\d+\.png|observation-(?:before|after)\.json|field-check\.json|trace\.json|harness-audit\.json|pre-submit\.png)$/;
 
 export class Runner {
   constructor(store, config) {
@@ -31,6 +50,7 @@ export class Runner {
     this.cancelled = new Set();
     this.activeHandle = null;
     this.agentAbort = null;
+    this.stepAbort = null;
     this.idleWaiters = [];
     // Pages kept open while the user reviews the screenshot in chat.
     this.live = new Map();
@@ -87,7 +107,7 @@ export class Runner {
       const problems = profileProblems(profile, Boolean(profile.taxId));
       if (problems.length) throw new AppError(problems.join('；'), 400, 'profile_incomplete');
     }
-    const engine = body.engine || 'normal';
+    const engine = body.engine || 'light';
     if (!['normal', 'light'].includes(engine)) throw new AppError('不支持此浏览器引擎');
     if (this.store.list('tasks').some((task) => task.cleanup?.status === 'close_unconfirmed'))
       throw new AppError(
@@ -162,6 +182,10 @@ export class Runner {
     if (task.status === 'running') {
       this.cancelled.add(id);
       this.agentAbort?.abort();
+      // Interrupt a step that is stuck waiting on the page, then free the browser now
+      // rather than after the step returns. Submission runs as 'submitting', never here.
+      this.stepAbort?.abort();
+      this.activeHandle?.close().catch(() => {});
       return this.store.event(id, 'cancelling', '正在停止操作并关闭会话');
     }
     if (['queued', 'awaiting_review'].includes(task.status))
@@ -193,6 +217,7 @@ export class Runner {
       outcome,
       screenshotSaved = false;
     let actualEngine = task.engineRequested;
+    let fillFallback;
     const check = () => {
       if (this.cancelled.has(task.id) || this.stopped)
         throw new AppError('任务已取消', 400, 'cancelled');
@@ -205,22 +230,33 @@ export class Runner {
       if (performance.now() - started > 15 * 60 * 1000)
         throw new AppError('任务已达到处理时间上限', 400, 'budget_exceeded');
     };
+    const stepAbort = (this.stepAbort = new AbortController());
+    const aborted = new Promise((_resolve, reject) =>
+      stepAbort.signal.addEventListener('abort', () =>
+        reject(new AppError('任务已取消', 400, 'cancelled')),
+      ),
+    );
+    aborted.catch(() => {});
     const step = async (message, fn) => {
       check();
       this.store.event(task.id, 'processing', message);
       const at = performance.now();
       try {
-        return await fn();
+        return await Promise.race([fn(), aborted]);
       } finally {
         timings.push({ name: message, ms: Math.round(performance.now() - at) });
       }
     };
     const screenshot = async () => {
-      await handle.page.screenshot({
-        path: path.join(dir, 'pre-submit.png'),
-        fullPage: true,
-        timeout: 15000,
-      });
+      await handle.page
+        .screenshot({
+          path: path.join(dir, 'pre-submit.png'),
+          fullPage: true,
+          timeout: 15000,
+        })
+        .catch((error) => {
+          throw new AppError(`填写截图未保存：${safeMessage(error)}`, 400, 'screenshot_failed');
+        });
       screenshotSaved = true;
       const current = this.store.require('tasks', task.id);
       this.store.patchTask(task.id, {
@@ -248,215 +284,243 @@ export class Runner {
         outcome = rule;
         return;
       }
-      const prepared = await prepareInvoiceBrowser({
-        engine: actualEngine,
-        url: task.url,
-        directory: dir,
-        open: this.config.openBrowser || openBrowser,
-        check,
-        step,
-        onHandle: (active) => {
-          this.activeHandle = active;
-        },
-        onBlocked: (record) => {
-          if (blocked.length < 100) blocked.push(record);
-        },
-        onArtifact: (artifact) => {
-          const current = this.store.require('tasks', task.id);
-          this.store.patchTask(task.id, {
-            artifacts: [
-              ...current.artifacts.filter((item) => item.name !== artifact.name),
-              artifact,
-            ],
-          });
-        },
-        onUpdate: (patch) => {
-          this.store.patchTask(task.id, patch);
-          if (patch.engineFallback?.result === 'checking')
-            this.store.event(task.id, 'engine_recheck', 'light 页面异常，正在使用 normal 复核');
-        },
-      });
-      handle = prepared.handle;
-      orderRead = prepared.orderRead;
-      initialObservation = prepared.observation;
-      initialState = prepared.state;
-      actualEngine = prepared.engine;
-      if (initialState && !initialObservation) {
-        outcome = initialState;
-        await screenshot();
-        return;
-      }
-      const before =
-        initialObservation || (await step('识别页面与字段', () => observePage(handle.page)));
-      await writeFile(path.join(dir, 'observation-before.json'), JSON.stringify(before, null, 2));
-      const pageState = initialState || classifyPage(before);
-      if (pageState) {
-        outcome = pageState;
-        await screenshot();
-        return;
-      }
-      this.store.patchTask(task.id, {
-        finalHost: new URL(handle.page.url()).hostname,
-      });
-      if (task.mode === 'read_only') {
-        await screenshot();
-        outcome = { status: 'observed', message: '只读检查完成，未填写或提交' };
-        return;
-      }
-      const amounts = assertInvoiceAmounts(before);
-      if (amounts.length)
-        this.store.patchTask(task.id, {
-          transaction: { amount: amounts[0].amount, amountSource: 'invoice_page' },
-        });
-      let result, preparationTools;
-      const onTaxVerified = (evidence) => {
-        check();
-        const saved = this.store.savePageTax(task.id, evidence);
-        Object.assign(task.profile, saved);
-        return saved;
-      };
-      // A user correction means the reviewed result was wrong; let Harness re-analyse.
-      const route = task.correctionNotes?.length
-        ? { source: 'agent', reason: 'user_correction' }
-        : await this.rules.select(before, task.profile, actualEngine);
-      this.store.patchTask(task.id, {
-        executionSource: route.source,
-        routeReason: route.reason || 'verified_contract',
-      });
-      if (route.source === 'adapter') {
+      for (;;) {
         try {
-          result = await executeRule({
-            route,
-            registry: this.rules,
-            page: handle.page,
-            profile: task.profile,
+          const prepared = await prepareInvoiceBrowser({
+            engine: actualEngine,
+            url: task.url,
             directory: dir,
+            open: this.config.openBrowser || openBrowser,
             check,
-            onTaxVerified,
-            onProgress: (message) => this.store.event(task.id, 'rule_tool', message),
-            onCheck: (checks) => this.store.patchTask(task.id, { fieldChecks: checks }),
+            step,
+            onHandle: (active) => {
+              this.activeHandle = active;
+            },
+            onBlocked: (record) => {
+              if (blocked.length < 100) blocked.push(record);
+            },
+            onArtifact: (artifact) => {
+              const current = this.store.require('tasks', task.id);
+              this.store.patchTask(task.id, {
+                artifacts: [
+                  ...current.artifacts.filter((item) => item.name !== artifact.name),
+                  artifact,
+                ],
+              });
+            },
+            onUpdate: (patch) => {
+              this.store.patchTask(task.id, patch);
+              if (patch.engineFallback?.result === 'checking')
+                this.store.event(task.id, 'engine_recheck', 'light 页面异常，正在使用 normal 复核');
+            },
           });
-        } catch (error) {
-          if (
-            ![
-              'ambiguous_field',
-              'new_required_fields',
-              'field_missing',
-              'stale_element',
-              'readback_mismatch',
-              'rule_mismatch',
-              'invalid_element',
-            ].includes(error.code)
-          )
-            throw error;
-          this.store.event(task.id, 'agent', '规则与当前页面不一致，交由 Harness 重新分析');
-          preparationTools = error.preparationTools;
+          handle = prepared.handle;
+          orderRead = prepared.orderRead;
+          initialObservation = prepared.observation;
+          initialState = prepared.state;
+          actualEngine = prepared.engine;
+          if (initialState && !initialObservation) {
+            outcome = initialState;
+            await screenshot();
+            return;
+          }
+          const before =
+            initialObservation || (await step('识别页面与字段', () => observePage(handle.page)));
+          await writeFile(
+            path.join(dir, 'observation-before.json'),
+            JSON.stringify(before, null, 2),
+          );
+          const pageState = initialState || classifyPage(before);
+          if (pageState) {
+            outcome = pageState;
+            await screenshot();
+            return;
+          }
           this.store.patchTask(task.id, {
-            executionSource: 'agent',
-            routeReason: 'adapter_mismatch',
+            finalHost: new URL(handle.page.url()).hostname,
           });
+          if (task.mode === 'read_only') {
+            await screenshot();
+            outcome = { status: 'observed', message: '只读检查完成，未填写或提交' };
+            return;
+          }
+          const amounts = assertInvoiceAmounts(before);
+          if (amounts.length)
+            this.store.patchTask(task.id, {
+              transaction: { amount: amounts[0].amount, amountSource: 'invoice_page' },
+            });
+          let result, preparationTools;
+          const onTaxVerified = (evidence) => {
+            check();
+            const saved = this.store.savePageTax(task.id, evidence);
+            Object.assign(task.profile, saved);
+            return saved;
+          };
+          // A user correction means the reviewed result was wrong; let Harness re-analyse.
+          const route = task.correctionNotes?.length
+            ? { source: 'agent', reason: 'user_correction' }
+            : await this.rules.select(before, task.profile, actualEngine);
+          this.store.patchTask(task.id, {
+            executionSource: route.source,
+            routeReason: route.reason || 'verified_contract',
+          });
+          if (route.source === 'adapter') {
+            try {
+              result = await executeRule({
+                route,
+                registry: this.rules,
+                page: handle.page,
+                profile: task.profile,
+                directory: dir,
+                check,
+                onTaxVerified,
+                onProgress: (message) => this.store.event(task.id, 'rule_tool', message),
+                onCheck: (checks) => this.store.patchTask(task.id, { fieldChecks: checks }),
+              });
+            } catch (error) {
+              if (
+                ![
+                  'ambiguous_field',
+                  'new_required_fields',
+                  'field_missing',
+                  'stale_element',
+                  'readback_mismatch',
+                  'rule_mismatch',
+                  'invalid_element',
+                ].includes(error.code)
+              )
+                throw error;
+              this.store.event(task.id, 'agent', '规则与当前页面不一致，交由 Harness 重新分析');
+              preparationTools = error.preparationTools;
+              this.store.patchTask(task.id, {
+                executionSource: 'agent',
+                routeReason: 'adapter_mismatch',
+              });
+            }
+          }
+          if (!result) {
+            this.agentAbort = new AbortController();
+            this.store.event(task.id, 'agent', 'Harness 正在分析页面并调用填写工具');
+            result = await runInvoiceAgent({
+              page: handle.page,
+              profile: task.profile,
+              taskId: task.id,
+              dataDir: this.config.dataDir,
+              directory: dir,
+              engine: actualEngine,
+              browserTools: preparationTools,
+              corrections: task.correctionNotes,
+              check,
+              signal: this.agentAbort.signal,
+              onProgress: (message) => this.store.event(task.id, 'agent_tool', message),
+              onCheck: (checks) => this.store.patchTask(task.id, { fieldChecks: checks }),
+              onTaxVerified,
+              onRequest: (metrics) => {
+                this.store.patchTask(task.id, {
+                  modelCalls: metrics.calls,
+                  modelName: metrics.model,
+                  modelToolCalls: metrics.toolCalls,
+                  harnessTools: metrics.toolNames,
+                });
+                this.store.event(task.id, 'model', `模型分析第 ${metrics.calls} 次`);
+              },
+            });
+            this.agentAbort = null;
+          }
+          check();
+          this.store.patchTask(task.id, {
+            fieldChecks: result.checks,
+            coverageGaps: result.coverageGaps,
+            transaction: result.transaction || this.store.require('tasks', task.id).transaction,
+            parameterSignature: result.signature,
+            signatureComplete: result.signatureComplete === true,
+            executionSource: result.executionSource || 'adapter',
+            ...(result.ruleRevision
+              ? {
+                  ruleDomain: result.ruleDomain,
+                  ruleId: result.ruleId,
+                  ruleVariant: result.ruleVariant,
+                  ruleRevision: result.ruleRevision,
+                }
+              : {}),
+            ...(result.modelCalls
+              ? {
+                  modelCalls: result.modelCalls,
+                  modelName: result.modelName,
+                  modelSteps: result.modelSteps,
+                  harnessVersion: result.harnessVersion,
+                  modelToolCalls: result.toolCalls,
+                  harnessClosed: result.harnessClosed,
+                }
+              : {}),
+          });
+          await writeFile(
+            path.join(dir, 'field-check.json'),
+            JSON.stringify(result.checks, null, 2),
+          );
+          await writeFile(
+            path.join(dir, 'trace.json'),
+            JSON.stringify(
+              {
+                steps: result.checks,
+                timings,
+                mode: task.mode,
+                engineRequested: task.engineRequested,
+                engine: actualEngine,
+                engineFallback: this.store.require('tasks', task.id).engineFallback,
+                fillFallback,
+                prepareOnly: true,
+                platformAccepted: false,
+              },
+              null,
+              2,
+            ),
+          );
+          if (result.checks.some((field) => !field.matches))
+            throw new AppError(
+              '填写值与资料不一致，已停止，请查看核对结果',
+              400,
+              'readback_mismatch',
+            );
+          const after = await step('复核最终页面', () => observePage(handle.page));
+          await writeFile(path.join(dir, 'observation-after.json'), JSON.stringify(after, null, 2));
+          const abnormal = pageAbnormality(after);
+          if (abnormal) throw new AppError(abnormal.message, 400, abnormal.reasonCode);
+          assertInvoiceAmounts(after);
+          await step('保存填写截图', screenshot);
+          check();
+          outcome = {
+            status: 'awaiting_review',
+            message:
+              '填写与核对完成，尚未提交。请在 5 分钟内回复：确认提交 / 指出要改的地方 / 放弃。',
+            reviewToken: randomUUID(),
+            evidenceDigest: digest({
+              profile: task.profile,
+              checks: result.checks,
+              screenshot: 'pre-submit.png',
+            }),
+          };
+          if (
+            !task.temporaryProfile &&
+            this.store.get('profiles', task.profileId)?.revision !== task.profile.revision
+          )
+            outcome = {
+              status: 'needs_changes',
+              message: '运行期间资料已更新，请用新资料重新准备',
+              reviewStatus: 'invalidated',
+            };
+          break;
+        } catch (error) {
+          if (actualEngine !== 'light' || fillFallback || !LIGHT_REFILL_CODES.has(error.code))
+            throw error;
+          check();
+          fillFallback = await this.leaveLightAttempt(task, dir, handle, orderRead, error);
+          handle = orderRead = initialObservation = initialState = null;
+          screenshotSaved = false;
+          actualEngine = 'normal';
+          this.store.patchTask(task.id, { fillFallback, fieldChecks: [] });
         }
       }
-      if (!result) {
-        this.agentAbort = new AbortController();
-        this.store.event(task.id, 'agent', 'Harness 正在分析页面并调用填写工具');
-        result = await runInvoiceAgent({
-          page: handle.page,
-          profile: task.profile,
-          taskId: task.id,
-          dataDir: this.config.dataDir,
-          directory: dir,
-          engine: actualEngine,
-          browserTools: preparationTools,
-          corrections: task.correctionNotes,
-          check,
-          signal: this.agentAbort.signal,
-          onProgress: (message) => this.store.event(task.id, 'agent_tool', message),
-          onCheck: (checks) => this.store.patchTask(task.id, { fieldChecks: checks }),
-          onTaxVerified,
-          onRequest: (metrics) => {
-            this.store.patchTask(task.id, {
-              modelCalls: metrics.calls,
-              modelName: metrics.model,
-              modelToolCalls: metrics.toolCalls,
-              harnessTools: metrics.toolNames,
-            });
-            this.store.event(task.id, 'model', `模型分析第 ${metrics.calls} 次`);
-          },
-        });
-        this.agentAbort = null;
-      }
-      check();
-      this.store.patchTask(task.id, {
-        fieldChecks: result.checks,
-        coverageGaps: result.coverageGaps,
-        transaction: result.transaction || this.store.require('tasks', task.id).transaction,
-        parameterSignature: result.signature,
-        signatureComplete: result.signatureComplete === true,
-        executionSource: result.executionSource || 'adapter',
-        ...(result.ruleRevision
-          ? {
-              ruleDomain: result.ruleDomain,
-              ruleId: result.ruleId,
-              ruleVariant: result.ruleVariant,
-              ruleRevision: result.ruleRevision,
-            }
-          : {}),
-        ...(result.modelCalls
-          ? {
-              modelCalls: result.modelCalls,
-              modelName: result.modelName,
-              modelSteps: result.modelSteps,
-              harnessVersion: result.harnessVersion,
-              modelToolCalls: result.toolCalls,
-              harnessClosed: result.harnessClosed,
-            }
-          : {}),
-      });
-      await writeFile(path.join(dir, 'field-check.json'), JSON.stringify(result.checks, null, 2));
-      await writeFile(
-        path.join(dir, 'trace.json'),
-        JSON.stringify(
-          {
-            steps: result.checks,
-            timings,
-            mode: task.mode,
-            engineRequested: task.engineRequested,
-            engine: actualEngine,
-            engineFallback: this.store.require('tasks', task.id).engineFallback,
-            prepareOnly: true,
-            platformAccepted: false,
-          },
-          null,
-          2,
-        ),
-      );
-      if (result.checks.some((field) => !field.matches))
-        throw new AppError('填写值与资料不一致，已停止，请查看核对结果', 400, 'readback_mismatch');
-      const after = await step('复核最终页面', () => observePage(handle.page));
-      await writeFile(path.join(dir, 'observation-after.json'), JSON.stringify(after, null, 2));
-      assertInvoiceAmounts(after);
-      await step('保存填写截图', screenshot);
-      check();
-      outcome = {
-        status: 'awaiting_review',
-        message: '填写与核对完成，尚未提交。请在 5 分钟内回复：确认提交 / 指出要改的地方 / 放弃。',
-        reviewToken: randomUUID(),
-        evidenceDigest: digest({
-          profile: task.profile,
-          checks: result.checks,
-          screenshot: 'pre-submit.png',
-        }),
-      };
-      if (
-        !task.temporaryProfile &&
-        this.store.get('profiles', task.profileId)?.revision !== task.profile.revision
-      )
-        outcome = {
-          status: 'needs_changes',
-          message: '运行期间资料已更新，请用新资料重新准备',
-          reviewStatus: 'invalidated',
-        };
     } catch (error) {
       if (handle && !screenshotSaved) await screenshot().catch(() => {});
       const cancelled = error.code === 'cancelled';
@@ -501,6 +565,7 @@ export class Runner {
               {
                 attempts,
                 fallback: this.store.require('tasks', task.id).engineFallback,
+                fillFallback,
                 prepareOnly: true,
                 actualSubmitted: false,
               },
@@ -514,6 +579,7 @@ export class Runner {
         outcome = { status: 'cancelled', message: '任务已取消，未真实提交' };
       this.activeHandle = null;
       this.agentAbort = null;
+      this.stepAbort = null;
       this.cancelled.delete(task.id);
       const stepImages = (await readdir(dir))
         .filter((name) => /^step-\d+\.png$/.test(name))
@@ -568,6 +634,54 @@ export class Runner {
           : {}),
       });
     }
+  }
+  // Light failed while filling: keep its evidence, confirm the session is closed, and
+  // hand back a record so execute() can refill the whole page once under normal.
+  async leaveLightAttempt(task, dir, handle, orderRead, error) {
+    this.store.event(
+      task.id,
+      'engine_recheck',
+      `light 填写未完成（${safeMessage(error)}），关闭后改用 normal 整页重填`,
+    );
+    const record = {
+      from: 'light',
+      to: 'normal',
+      trigger: error.code,
+      message: safeMessage(error),
+      modelCalls: this.store.require('tasks', task.id).modelCalls || 0,
+      evidence: 'light-attempt/',
+    };
+    const evidence = path.join(dir, 'light-attempt');
+    await mkdir(evidence, { recursive: true });
+    if (handle)
+      await handle.page
+        .screenshot({ path: path.join(evidence, 'failure.png'), fullPage: true, timeout: 15000 })
+        .catch((screenshotError) => {
+          record.screenshotError = safeMessage(screenshotError);
+        });
+    for (const name of await readdir(dir))
+      if (ATTEMPT_FILE.test(name)) await rename(path.join(dir, name), path.join(evidence, name));
+    const current = this.store.require('tasks', task.id);
+    this.store.patchTask(task.id, {
+      artifacts: current.artifacts.filter((a) => !ATTEMPT_FILE.test(a.name)),
+    });
+    orderRead?.close();
+    const earlier = this.store.require('tasks', task.id).cleanup;
+    if (!handle && earlier && !['closed', 'create_failed'].includes(earlier.status)) throw error;
+    if (handle) {
+      this.activeHandle = null;
+      record.cleanup = await handle.close().catch(() => ({ status: 'close_unconfirmed' }));
+      if (!['closed', 'create_failed'].includes(record.cleanup.status)) {
+        this.store.patchTask(task.id, { fillFallback: record, cleanup: record.cleanup });
+        throw new AppError(
+          'light 会话尚未确认关闭，已停止 normal 重填，请先重试关闭',
+          409,
+          'session_cleanup_required',
+        );
+      }
+    }
+    await writeFile(path.join(evidence, 'fallback.json'), JSON.stringify(record, null, 2));
+    return record;
   }
   release(id) {
     const live = this.live.get(id);
@@ -736,6 +850,7 @@ export class Runner {
     this.stopped = true;
     this.store.off('task', this.taskListener);
     this.agentAbort?.abort();
+    this.stepAbort?.abort();
     if (this.activeHandle) await this.activeHandle.close().catch(() => {});
     if (this.running) await new Promise((resolve) => this.idleWaiters.push(resolve));
     await Promise.allSettled([...this.submitting.values()]);

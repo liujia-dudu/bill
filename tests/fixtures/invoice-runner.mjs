@@ -71,7 +71,7 @@ export function syntheticBrowser(file = 'invoice-demo.html') {
 }
 
 export async function writeSyntheticRule(directory, profile) {
-  const handle = await syntheticBrowser()('normal');
+  const handle = await syntheticBrowser()('light');
   try {
     await installGuard(handle.context, { demo: true });
     await handle.page.goto(SYNTHETIC_URL);
@@ -111,6 +111,8 @@ export async function writeSyntheticRule(directory, profile) {
       taskId: 'synthetic',
       initialUrl: SYNTHETIC_URL,
       initialProfile: profile,
+      // Rules match by engine; record under the default engine new tasks use.
+      engine: 'light',
     });
     if (!candidate) throw new Error('Synthetic rule could not be built');
     const rulesDir = path.join(directory, 'rules');

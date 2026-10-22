@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AppError, safeMessage } from '../core/validation.mjs';
-import { classifyPage } from './observe.mjs';
+import { classifyPage, tickAgreements } from './observe.mjs';
 
 // Runs only from Runner.decide after the user's own chat reply confirmed the
 // screenshot. The fill Agent never reaches this module.
@@ -126,6 +126,18 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
   let result;
   try {
     guard.arm(30000, [new URL(page.url()).hostname]);
+    // Normally already ticked before the review screenshot; this catches any the
+    // page reset, still within the user's confirmation.
+    for (const box of await tickAgreements(page)) {
+      record.clicks.push({ text: box.text, kind: 'agreement' });
+      if (!box.checked) throw new AppError('协议未能勾选，未提交', 400, 'agreement_unchecked');
+    }
+    if (
+      flat(await scanAll(page, `${attribute}-check`), 'dialogs').some(
+        (text) => !knownDialogs.has(text),
+      )
+    )
+      throw new AppError('勾选协议后页面弹出了新的提示，已停止', 400, 'agreement_dialog');
     const [button] = candidates;
     record.clicks.push({ text: button.text, kind: 'submit' });
     await click(page, button, attribute);

@@ -23,6 +23,8 @@ export const fieldNames = {
   bankName: '开户银行',
   bankAccount: '银行账号',
 };
+// Personal invoices rarely need a name; the conventional title is just "个人".
+export const PERSONAL_TITLE = '个人';
 export function normalizeProfile(value) {
   if (!value || !['enterprise', 'personal'].includes(value.type))
     throw new AppError('请选择企业或个人抬头');
@@ -35,9 +37,11 @@ export function normalizeProfile(value) {
       throw new AppError(`${fieldNames[key]}过长`);
   }
   profile.taxId = profile.taxId.toUpperCase();
-  if (profile.type === 'personal')
+  if (profile.type === 'personal') {
     for (const key of ['taxId', 'address', 'telephone', 'bankName', 'bankAccount'])
       profile[key] = '';
+    profile.title ||= PERSONAL_TITLE;
+  }
   return profile;
 }
 export function profileProblems(profile, full = true) {

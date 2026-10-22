@@ -66,6 +66,38 @@ test('shared profile memory and one-task overrides stay separate across conversa
     assert.equal(e.chat.conversation(a.id).temporaryProfile.title, '李四');
     assert.equal(e.chat.conversation(b.id).temporaryProfile, null);
     assert.equal(e.store.get('profiles', saved.profile.id).title, '张三');
+    // 已保存的邮箱可直接沿用，不要求用户在本对话重发；从未出现过的值仍拒绝
+    const reuseText = '新建个人抬头王五，邮箱用已保存的那个';
+    const reused = await e.chat.dispatch(b.id, user(e.store, b.id, reuseText), 'profile_save', {
+      scope: 'shared',
+      fields: { type: 'personal', title: '王五', email: 'zhang@example.invalid' },
+      sourceQuote: reuseText,
+    });
+    assert.equal(reused.profile.email, 'zhang@example.invalid');
+    await assert.rejects(
+      e.chat.dispatch(b.id, user(e.store, b.id, '新建个人抬头王五，邮箱随便'), 'profile_save', {
+        scope: 'shared',
+        fields: { type: 'personal', title: '王五', email: 'made-up@example.invalid' },
+        sourceQuote: '新建个人抬头王五，邮箱随便',
+      }),
+      /不能编造/,
+    );
+    // A personal invoice needs only an email; the title defaults to "个人" without asking.
+    const personalText = '开张私人的票，邮箱 me@example.invalid';
+    const personal = await e.chat.dispatch(
+      b.id,
+      user(e.store, b.id, personalText),
+      'profile_save',
+      {
+        scope: 'conversation',
+        fields: { type: 'personal', title: '个人', email: 'me@example.invalid' },
+        sourceQuote: personalText,
+      },
+    );
+    assert.equal(personal.profile.title, '个人');
+    const untitled = e.store.saveProfile({ type: 'personal', email: 'me@example.invalid' });
+    assert.equal(untitled.title, '个人');
+    assert.equal(untitled.ready, true);
     const input = e.chat.attachments.fromUrl(a.id, 'https://example.com/invoice');
     const observed = [];
     const cancelled = [];

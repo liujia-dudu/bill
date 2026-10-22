@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" />
+  <title>按钮式抬头类型合成测试</title>
+  <style>
+    body {
+      font: 16px sans-serif;
+      max-width: 430px;
+      padding: 16px;
+    }
+    .van-cell {
+      display: flex;
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .van-cell__title {
+      width: 90px;
+    }
+    .van-button--primary {
+      background: #1989fa;
+      color: #fff;
+    }
+  </style>
+  <!-- Mirrors the real page: formless <button>s without a type attribute (so type=submit). -->
+  <div class="van-cell">
+    <div class="van-cell__title"><span>抬头类型</span></div>
+    <div class="van-cell__value">
+      <button class="van-button van-button--primary van-button--small">
+        <span class="van-button__text">公司</span>
+      </button>
+      <button class="van-button van-button--info van-button--small van-button--plain">
+        <span class="van-button__text">个人</span>
+      </button>
+      <button class="van-button van-button--info van-button--small van-button--plain">
+        <span class="van-button__text">事业单位</span>
+      </button>
+    </div>
+  </div>
+  <div class="van-cell">
+    <div class="van-cell__title"><span>抬头名称</span></div>
+    <input placeholder="请输入发票抬头" />
+  </div>
+  <div class="van-cell" id="tax">
+    <div class="van-cell__title"><span>企业税号</span></div>
+    <input placeholder="请输入纳税人识别号" />
+  </div>
+  <div class="van-cell">
+    <div class="van-cell__title"><span>邮箱地址</span></div>
+    <input placeholder="请输入接收电子发票的邮箱" />
+  </div>
+  <div class="van-cell">
+    <div class="van-cell__title"><span>总金额</span></div>
+    <input readonly value="¥199" />
+  </div>
+  <button class="van-button van-button--primary van-button--block" id="submit">提交</button>
+  <script>
+    window.submissionCount = 0;
+    const types = [...document.querySelectorAll('.van-button--small')];
+    for (const button of types)
+      button.addEventListener('click', () => {
+        for (const other of types) {
+          other.classList.toggle('van-button--primary', other === button);
+          other.classList.toggle('van-button--info', other !== button);
+          other.classList.toggle('van-button--plain', other !== button);
+        }
+        document.getElementById('tax').style.display =
+          button.textContent.trim() === '个人' ? 'none' : '';
+      });
+    document.getElementById('submit').addEventListener('click', () => window.submissionCount++);
+  </script>
+</html>

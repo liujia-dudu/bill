@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { AppError, digest, fieldNames } from '../core/validation.mjs';
+import { AppError, digest, fieldNames, PERSONAL_TITLE } from '../core/validation.mjs';
 import {
   classifyPage,
   inspectInvoiceAmounts,
@@ -14,7 +14,7 @@ import { pageContract } from '../rules/contract.mjs';
 import { ruleActions } from '../rules/schema.mjs';
 
 const controlSelector =
-  'input,textarea,select,button,a,[role=button],[role=option],[role=combobox],.el-select-dropdown__item,ul[role=listbox] li,.invoice-header-suggest > div';
+  'input,textarea,select,button,a,[role=button],[role=option],[role=combobox],[role=radio],[role=tab],.el-select-dropdown__item,ul[role=listbox] li,.invoice-header-suggest > div';
 const forbidden =
   /提交|开票|申请|确认|同意|发送|验证码|支付|购买|删除|submit|apply|confirm|agree|send|pay|purchase|delete/i;
 const navigation =
@@ -22,6 +22,22 @@ const navigation =
 const normalize = (value) => value.replace(/\s+/g, ' ').trim();
 const searchButton =
   /^(?:查询|搜索|查找|查询税号|税号查询|查询企业|企业查询|查询公司|公司查询|search)$/i;
+// Buyer-type choices rendered as buttons or role=radio/tab elements instead of native
+// radios (e.g. Vant 抬头类型: 公司/个人).
+const buyerTypeLabel = /抬头类型|购买方类型|发票抬头类型|抬头性质|开票类型|buyer\s*type/i;
+const buyerTypeChoice =
+  /^(?:公司|企业|单位|企业单位|个人|非企业|非企业单位|个人或事业单位|事业单位|其他|personal|individual|enterprise|company)$/i;
+const choiceButton = (control) =>
+  (control.tag === 'button' || ['radio', 'tab'].includes(control.role)) &&
+  control.type !== 'radio' &&
+  !control.inForm &&
+  buyerTypeLabel.test(control.label) &&
+  buyerTypeChoice.test(normalize(control.text)) &&
+  !forbidden.test(control.text);
+const buttonTypeMatches = (type, text) =>
+  type === 'enterprise'
+    ? /企业|公司|单位|enterprise|company/i.test(text) && !/非企业|个人/.test(text)
+    : /个人|personal|individual/i.test(text);
 
 export function redactProfile(value, profile) {
   if (Array.isArray(value)) return value.map((item) => redactProfile(item, profile));
@@ -32,7 +48,13 @@ export function redactProfile(value, profile) {
   if (typeof value !== 'string') return value;
   let redacted = value;
   for (const [key, val] of Object.entries(profile))
-    if (Object.hasOwn(fieldNames, key) && typeof val === 'string' && val.length > 1)
+    // A personal title of just "个人" is not private and would hide the page's own type options.
+    if (
+      Object.hasOwn(fieldNames, key) &&
+      typeof val === 'string' &&
+      val.length > 1 &&
+      !buyerTypeChoice.test(val)
+    )
       redacted = redacted.replaceAll(val, `[profile.${key}]`);
   return redacted;
 }
@@ -123,7 +145,8 @@ export class InvoiceBrowserTools {
           )
             actions.push('fill');
           if (control.role === 'combobox') actions.push('open_choices');
-          if (control.tag === 'select' || control.type === 'radio') actions.push('select');
+          if (control.tag === 'select' || control.type === 'radio' || choiceButton(control))
+            actions.push('select');
           if (control.role === 'option' || control.tag === 'li' || control.companySuggestion)
             actions.push('choose_company');
           if (control.tag === 'button' && control.type === 'button' && searchButton.test(text))
@@ -173,8 +196,7 @@ export class InvoiceBrowserTools {
       profile: {
         type: this.profile.type,
         availableFields: Object.keys(values).filter((key) => values[key]),
-        requiredCore:
-          this.profile.type === 'enterprise' ? ['title', 'taxId', 'email'] : ['title', 'email'],
+        requiredCore: this.requiredCore(),
       },
       frames,
       completedFields: this.checks.map(({ key, matches, stage }) => ({ key, matches, stage })),
@@ -188,6 +210,12 @@ export class InvoiceBrowserTools {
     if (pageState) this.blocked = { reason: pageState.message, status: pageState.status };
     await this.persist();
     return redactProfile({ ...this.observation, pageState }, this.profile);
+  }
+  // A personal profile whose user declined to give a name carries the default
+  // "个人": it fills a title field the page requires, otherwise the field may stay empty.
+  requiredCore() {
+    if (this.profile.type === 'enterprise') return ['title', 'taxId', 'email'];
+    return this.profile.title === PERSONAL_TITLE ? ['email'] : ['title', 'email'];
   }
   async target(ref, action) {
     this.check();
@@ -311,7 +339,31 @@ export class InvoiceBrowserTools {
           : /个人|personal/i;
       if (!desired.test(label) || (this.profile.type === 'enterprise' && /非企业/.test(label)))
         throw new AppError('购买方类型与已保存资料不一致');
-      await target.locator.check();
+      // Styled radios (Element Plus, Vant) cover the real input with a span that
+      // intercepts the pointer; a radio click cannot submit, so click it directly.
+      await target.locator
+        .check({ timeout: 1500 })
+        .catch(() => target.locator.evaluate((node) => node.click()));
+      if (!(await target.locator.isChecked()))
+        throw new AppError(
+          '点击后页面未显示该类型已选中，请重新观察核对',
+          400,
+          'selection_unverified',
+        );
+    } else if (choiceButton(target.control)) {
+      const text = normalize((await target.locator.textContent()) || '');
+      if (!choiceButton({ ...target.control, text }) || !buttonTypeMatches(this.profile.type, text))
+        throw new AppError('购买方类型与已保存资料不一致');
+      // The page guard stops every trusted click on submit-typed buttons, and a
+      // formless <button> defaults to type=submit. Click from the page instead,
+      // re-checking in the same step that no form can be submitted by it.
+      const clicked = await target.locator.evaluate((node) => {
+        if (node.form || node.closest('a,form') || node.matches('input')) return false;
+        node.click();
+        return true;
+      });
+      if (!clicked) throw new AppError('该按钮可能触发提交，已停止');
+      await this.page.waitForTimeout(300);
     } else {
       const choices = target.control.options.filter(
         (item) => !item.disabled && (item.value === requested || item.label === requested),
@@ -331,16 +383,33 @@ export class InvoiceBrowserTools {
       option: requested,
       stage: this.stage,
     });
-    const selectedValue =
-      target.control.type === 'radio'
+    const button = choiceButton(target.control);
+    const selectedValue = button
+      ? await this.pressed(target)
+      : target.control.type === 'radio'
         ? await target.locator.isChecked()
         : await target.locator.inputValue();
+    if (button && !selectedValue)
+      throw new AppError(
+        '点击后页面未显示该类型已选中，请重新观察核对',
+        400,
+        'selection_unverified',
+      );
     this.selections = this.selections.filter(
       (item) => JSON.stringify(item.identity) !== JSON.stringify(target.identity),
     );
-    this.selections.push({ identity: target.identity, stage: this.stage, value: selectedValue });
+    this.selections.push({
+      identity: target.identity,
+      ...(button ? { text: normalize(target.control.text) } : {}),
+      stage: this.stage,
+      value: selectedValue,
+    });
     this.refs.clear();
     return this.observe();
+  }
+  async pressed(ref) {
+    const [field] = await ref.frame.evaluate(inspectFields, { selector: ref.selector });
+    return field?.pressed === true;
   }
   async openChoices({ elementRef }) {
     const target = await this.target(elementRef, 'open_choices');
@@ -353,7 +422,7 @@ export class InvoiceBrowserTools {
   }
   async chooseCompany({ elementRef }) {
     const target = await this.target(elementRef, 'choose_company');
-    if (this.profile.type !== 'enterprise') throw new AppError('个人资料无需查询企业');
+    if (this.profile.type !== 'enterprise') return this.choosePersonalTitle(target);
     const candidate = pageCompanyCandidate(target.control.text);
     if (!candidate || companyNameKey(candidate.title) !== companyNameKey(this.profile.title))
       throw new AppError('企业候选与完整抬头不一致', 400, 'company_not_found');
@@ -406,6 +475,35 @@ export class InvoiceBrowserTools {
       text: target.control.text,
     };
     this.trace.push({ kind: 'choose_company', stage: this.stage, identity: target.identity });
+    this.refs.clear();
+    return this.observe();
+  }
+  // Some personal title inputs are filterable comboboxes (Element Plus allow-create):
+  // the typed name only sticks once its option is chosen. Accept only the single
+  // visible option whose text is exactly the saved title; no company or tax lookup.
+  async choosePersonalTitle(target) {
+    const title = this.checks.find((item) => item.key === 'title' && item.stage === this.stage);
+    if (!title?.matches) throw new AppError('请先在名称框填写资料中的抬头');
+    const exact = [];
+    for (const ref of this.refs.values()) {
+      if (!ref.actions.includes('choose_company') || ref.frame !== target.frame) continue;
+      const locator = ref.frame.locator(ref.selector);
+      if (!(await locator.isVisible())) continue;
+      if (normalize((await locator.textContent()) || '') === this.profile.title) exact.push(ref);
+    }
+    if (exact.length !== 1 || exact[0].selector !== target.selector)
+      throw new AppError('请选择与资料抬头完全一致的唯一选项', 400, 'title_option_not_found');
+    const titleRefs = [...this.refs.values()].filter(
+      (ref) =>
+        ref.frame === target.frame &&
+        Object.entries(ref.identity).every(([key, value]) => title.locator[key] === value),
+    );
+    if (titleRefs.length !== 1) throw new AppError('无法唯一确认抬头输入框');
+    await target.locator.click();
+    await target.frame.locator(titleRefs[0].selector).blur();
+    await this.page.waitForTimeout(300);
+    title.selected = true;
+    this.trace.push({ kind: 'choose_title', stage: this.stage, identity: target.identity });
     this.refs.clear();
     return this.observe();
   }
@@ -588,15 +686,27 @@ export class InvoiceBrowserTools {
     }
     for (const selection of this.selections) {
       const matches = [...this.refs.values()].filter(
-        (ref) => JSON.stringify(ref.identity) === JSON.stringify(selection.identity),
+        (ref) =>
+          JSON.stringify(ref.identity) === JSON.stringify(selection.identity) &&
+          (selection.text === undefined || normalize(ref.control.text) === selection.text),
       );
       if (!matches.length && selection.stage !== this.stage) continue;
       if (matches.length !== 1) throw new AppError('已选择选项发生变化，请重新核对');
       const ref = matches[0],
         locator = ref.frame.locator(ref.selector);
       const current =
-        ref.control.type === 'radio' ? await locator.isChecked() : await locator.inputValue();
+        selection.text !== undefined
+          ? await this.pressed(ref)
+          : ref.control.type === 'radio'
+            ? await locator.isChecked()
+            : await locator.inputValue();
       if (current !== selection.value) throw new AppError('页面改写了已选择的选项，请重新核对');
+    }
+    const typeButtons = controls.filter((c) => c.visible && choiceButton(c));
+    if (typeButtons.length) {
+      const active = typeButtons.filter((c) => c.pressed);
+      if (active.length !== 1 || !buttonTypeMatches(this.profile.type, normalize(active[0].text)))
+        throw new AppError('页面抬头类型与资料不一致，请先选择对应的抬头类型');
     }
     const unmapped = editable.filter(
       (c) =>
@@ -617,8 +727,7 @@ export class InvoiceBrowserTools {
       throw new AppError(
         '仍有未核对的必填项：' + unmapped.map((c) => c.label || c.placeholder).join('、'),
       );
-    const core =
-      this.profile.type === 'enterprise' ? ['title', 'taxId', 'email'] : ['title', 'email'];
+    const core = this.requiredCore();
     const incomplete = core.filter(
       (key) => !this.checks.some((item) => item.key === key && item.matches && item.selected),
     );

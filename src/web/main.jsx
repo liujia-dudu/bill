@@ -671,6 +671,17 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
           </a>
         </div>
       ) : null}
+      {t.status === 'awaiting_review' && t.tickedAgreements?.length ? (
+        <p className="agreement-note">
+          已代您勾选「{t.tickedAgreements.join('」「')}」，尚未提交。
+        </p>
+      ) : null}
+      {t.status === 'awaiting_review' && t.pendingAgreements?.length ? (
+        <p className="agreement-note">
+          截图中「{t.pendingAgreements.join('」「')}
+          」未勾选是正常的：回复“确认提交”后会先代您勾选，再提交。
+        </p>
+      ) : null}
       {t.fieldChecks?.length ? (
         <details className="field-checks">
           <summary>

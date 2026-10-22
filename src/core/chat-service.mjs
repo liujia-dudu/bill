@@ -1,6 +1,13 @@
 import { readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { AppError, digest, normalizeProfile, fieldNames, safeMessage } from './validation.mjs';
+import {
+  AppError,
+  digest,
+  normalizeProfile,
+  fieldNames,
+  safeMessage,
+  PERSONAL_TITLE,
+} from './validation.mjs';
 import { runHarness } from '../agent/harness-runtime.mjs';
 import { CHAT_PERSONA } from '../agent/chat-tools.mjs';
 import { Attachments } from './attachments.mjs';
@@ -406,13 +413,23 @@ export class ChatService {
       .slice(-12)
       .map((m) => m.text)
       .join('\n');
+    // 已保存资料本身来自用户输入，同字段复用不算编造
+    const saved = [...this.store.list('profiles'), this.conversation(id).temporaryProfile].filter(
+      Boolean,
+    );
     for (const [key, value] of Object.entries(fields)) {
       if (['type', 'isDefault'].includes(key)) continue;
       if (!Object.hasOwn(fieldNames, key) || typeof value !== 'string')
         throw new AppError('资料字段无效');
       if (value === '' && old?.[key] && !/清空|删除|去掉|不填|移除/.test(text))
         throw new AppError(`${fieldNames[key]}已有内容，不能未经用户要求清空`);
-      if (value && old?.[key] !== value && !text.includes(value))
+      if (
+        value &&
+        old?.[key] !== value &&
+        !text.includes(value) &&
+        !saved.some((p) => p[key] === value) &&
+        !(key === 'title' && value === PERSONAL_TITLE && (fields.type || old?.type) === 'personal')
+      )
         throw new AppError(`${fieldNames[key]}未由用户明确提供，不能编造`, 400, 'unprovided_value');
     }
   }

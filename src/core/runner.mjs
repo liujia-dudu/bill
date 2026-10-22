@@ -13,7 +13,13 @@ import {
 } from './validation.mjs';
 import { openBrowser, closeOrphan } from '../browser/session.mjs';
 import { prepareInvoiceBrowser, pageAbnormality } from '../browser/preflight.mjs';
-import { observePage, classifyPage, assertInvoiceAmounts } from '../browser/observe.mjs';
+import {
+  observePage,
+  classifyPage,
+  assertInvoiceAmounts,
+  screenshotWithAgreementNotes,
+  tickAgreements,
+} from '../browser/observe.mjs';
 import { RuleRegistry } from '../rules/registry.mjs';
 import { executeRule } from '../rules/executor.mjs';
 import { runInvoiceAgent } from '../agent/run-invoice.mjs';
@@ -248,15 +254,13 @@ export class Runner {
       }
     };
     const screenshot = async () => {
-      await handle.page
-        .screenshot({
-          path: path.join(dir, 'pre-submit.png'),
-          fullPage: true,
-          timeout: 15000,
-        })
-        .catch((error) => {
-          throw new AppError(`填写截图未保存：${safeMessage(error)}`, 400, 'screenshot_failed');
-        });
+      await screenshotWithAgreementNotes(handle.page, {
+        path: path.join(dir, 'pre-submit.png'),
+        fullPage: true,
+        timeout: 15000,
+      }).catch((error) => {
+        throw new AppError(`填写截图未保存：${safeMessage(error)}`, 400, 'screenshot_failed');
+      });
       screenshotSaved = true;
       const current = this.store.require('tasks', task.id);
       this.store.patchTask(task.id, {
@@ -479,6 +483,9 @@ export class Runner {
               400,
               'readback_mismatch',
             );
+          // Ticking is not submitting: the program (never the fill Agent) ticks the
+          // agreement so the screenshot matches what will be sent after confirmation.
+          const ticked = await step('勾选页面协议', () => tickAgreements(handle.page));
           const after = await step('复核最终页面', () => observePage(handle.page));
           await writeFile(path.join(dir, 'observation-after.json'), JSON.stringify(after, null, 2));
           const abnormal = pageAbnormality(after);
@@ -486,10 +493,18 @@ export class Runner {
           assertInvoiceAmounts(after);
           await step('保存填写截图', screenshot);
           check();
+          const agreements = after.frames
+            .flatMap((frame) => frame.agreementBoxes || [])
+            .filter((box) => !box.checked)
+            .map((box) => box.text);
           outcome = {
             status: 'awaiting_review',
             message:
               '填写与核对完成，尚未提交。请在 5 分钟内回复：确认提交 / 指出要改的地方 / 放弃。',
+            ...(agreements.length ? { pendingAgreements: agreements } : {}),
+            ...(ticked.some((box) => box.checked)
+              ? { tickedAgreements: ticked.filter((box) => box.checked).map((box) => box.text) }
+              : {}),
             reviewToken: randomUUID(),
             evidenceDigest: digest({
               profile: task.profile,

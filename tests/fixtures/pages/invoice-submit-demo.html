@@ -14,6 +14,18 @@
     <script>
       window.submitted = 0;
       const mode = new URLSearchParams(location.search).get('mode') || 'success';
+      if (mode === 'agree')
+        // Element Plus style: the real checkbox is hidden behind a styled span.
+        document
+          .querySelector('#after')
+          .insertAdjacentHTML(
+            'beforebegin',
+            '<div class="user_agree"><label class="el-checkbox"><span class="el-checkbox__input">' +
+              '<input type="checkbox" id="agree" style="position:absolute;width:0;height:0;opacity:0" />' +
+              '<span class="el-checkbox__inner" style="display:inline-block;width:14px;height:14px;border:1px solid #999"></span>' +
+              '</span></label> 我已阅读并同意<a href="#agreement">《用户授权协议》</a></div>' +
+              '<label><input type="checkbox" id="marketing" /> 同意接收营销短信</label>',
+          );
       const send = () =>
         fetch('/submit-endpoint', { method: 'POST', body: '{}' }).then(() =>
           fetch('/submit-status').then((response) => response.json()),
@@ -25,6 +37,10 @@
         });
       document.querySelector('#submit').onclick = () => {
         window.submitted++;
+        if (mode === 'agree' && !document.querySelector('#agree').checked) {
+          document.querySelector('#after').textContent = '请先阅读并同意用户授权协议';
+          return;
+        }
         if (mode === 'confirm') {
           if (confirm('确认提交这张发票？')) done();
         } else if (mode === 'fields') {

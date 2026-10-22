@@ -29,7 +29,7 @@ const invoiceDefinitions = [
   {
     name: 'invoice_select',
     description:
-      '选择购买方类型或原生下拉选项。选项必须来自当前观察；购买方类型必须等于用户 profile.type。',
+      '选择购买方类型或原生下拉选项。购买方类型可以是单选框，也可以是“抬头类型”一行中的公司/个人等按钮（按钮的 select 动作直接点选，option 填按钮文字）。选项必须来自当前观察；购买方类型必须等于用户 profile.type，页面默认类型不符时必须先切换再填写。',
     parameters: { elementRef: text('控件引用'), option: text('观察到的选项值或文字') },
   },
   {
@@ -40,7 +40,7 @@ const invoiceDefinitions = [
   {
     name: 'invoice_choose_company',
     description:
-      '从当前观察的企业联想选项中选择完整名称/税号精确一致的一项，程序核对真实资料；不允许选择近似名称。',
+      '从当前观察的企业联想选项中选择完整名称/税号精确一致的一项，程序核对真实资料；不允许选择近似名称。个人资料的名称框若是联想下拉（填写后值需选中才保留），用它选择文字与 profile.title 完全一致的唯一选项。',
     parameters: { elementRef: text('option 引用') },
   },
   {

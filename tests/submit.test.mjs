@@ -196,6 +196,32 @@ test('confirmed reply submits once on the reviewed page and records the real res
   }
 });
 
+test('a confirmed submit ticks the agreement in the same authorization, never marketing opt-ins', async () => {
+  const e = await environment();
+  try {
+    const { task, received } = await e.review('agree');
+    const tab = e.runner.live.get(task.id).handle.page;
+    // Our own trusted click cannot tick it before the user confirms.
+    await tab.locator('#marketing').click();
+    assert.equal(await tab.locator('#marketing').isChecked(), false);
+    assert.equal(await tab.locator('#agree').isChecked(), false);
+    await e.decide(e.say('确认提交'), { decision: 'submit', sourceQuote: '确认提交' });
+    await e.runner.submitting.get(task.id);
+    assert.equal(e.store.get('tasks', task.id).status, 'submitted');
+    assert.ok(received.includes('POST /submit-endpoint'));
+    const network = JSON.parse(
+      await readFile(path.join(e.dataDir, 'artifacts', task.id, 'submit-network.json'), 'utf8'),
+    );
+    assert.deepEqual(
+      network.clicks.map((c) => c.kind),
+      ['agreement', 'submit'],
+    );
+    assert.match(network.clicks[0].text, /用户授权协议/);
+  } finally {
+    await e.close();
+  }
+});
+
 test('the model cannot approve a submission the user did not give in this turn', async () => {
   const e = await environment();
   try {

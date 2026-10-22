@@ -41,6 +41,126 @@ export function inspectInvoiceAmounts() {
   return amounts;
 }
 
+// Agreement checkboxes ("我已阅读并同意《用户授权协议》"). Only the program ticks them,
+// inside the user-confirmed submission; the fill Agent never can. Styled checkboxes
+// (Element Plus) hide the input, so visibility and text come from its wrapper.
+export function inspectAgreements({ attribute } = {}) {
+  const visible = (node) => {
+    const rect = node?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const result = [];
+  for (const [index, box] of [...document.querySelectorAll('input[type=checkbox]')].entries()) {
+    if (box.disabled) continue;
+    let holder = box.closest('label') || box.parentElement;
+    for (let depth = 0; holder && depth < 4; depth++) {
+      if ((holder.innerText || '').trim()) break;
+      holder = holder.parentElement;
+    }
+    const text = (holder?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!/同意|已阅读|协议|条款|隐私|授权|agree|terms|privacy/i.test(text)) continue;
+    // Marketing opt-ins are never ticked on the user's behalf.
+    if (/营销|订阅|推送|广告|促销|优惠|会员|marketing|subscribe|newsletter/i.test(text)) continue;
+    if (!visible(box) && !visible(box.closest('label')) && !visible(holder)) continue;
+    if (attribute) box.setAttribute(attribute, String(index));
+    result.push({ id: String(index), text, checked: box.checked });
+  }
+  return result;
+}
+
+// Program-only (never the fill Agent): tick each unticked agreement on the invoice
+// page's own frames and report which stuck. An untrusted click passes the page guard,
+// which only stops our trusted input. Text naming payment, codes or sending is skipped.
+export async function tickAgreements(page) {
+  const attribute = `data-invoice-agree-${Math.random().toString(16).slice(2, 10)}`;
+  const origin = new URL(page.url()).origin;
+  const results = [];
+  for (const frame of page.frames()) {
+    let frameOrigin;
+    try {
+      frameOrigin = new URL(frame.url() || 'about:blank').origin;
+    } catch {
+      continue;
+    }
+    if (frameOrigin !== origin && !(frameOrigin === 'null' && frame.parentFrame())) continue;
+    for (const box of await frame.evaluate(inspectAgreements, { attribute })) {
+      if (box.checked) continue;
+      const result = { text: box.text, checked: false };
+      results.push(result);
+      if (/验证码|发送|支付|购买|付款|pay|purchase|send/i.test(box.text)) continue;
+      const locator = frame.locator(`[${attribute}="${box.id}"]`);
+      await locator.evaluate((node) => node.click());
+      await page.waitForTimeout(300);
+      result.checked = await locator.isChecked();
+    }
+  }
+  return results;
+}
+
+// The review screenshot shows unticked agreements; label each one so the user knows
+// it is ticked only after their confirmation. The label is drawn over the page
+// (no layout change, no events) and removed right after the screenshot.
+export async function screenshotWithAgreementNotes(page, options) {
+  const attribute = `data-invoice-note-${Math.random().toString(16).slice(2, 10)}`;
+  const marked = [];
+  for (const frame of page.frames()) {
+    try {
+      const boxes = await frame.evaluate(inspectAgreements, { attribute });
+      marked.push(frame);
+      const pending = boxes.filter((box) => !box.checked);
+      if (!pending.length) continue;
+      await frame.evaluate(
+        ({ attribute, ids }) => {
+          for (const id of ids) {
+            const box = document.querySelector(`[${attribute}="${id}"]`);
+            const anchor = [box, box?.closest('label'), box?.parentElement].find((node) => {
+              const rect = node?.getBoundingClientRect();
+              return rect && rect.width > 0 && rect.height > 0;
+            });
+            if (!anchor) continue;
+            const rect = anchor.getBoundingClientRect();
+            const note = document.createElement('div');
+            note.setAttribute(`${attribute}-label`, '');
+            note.textContent = '确认提交后自动勾选';
+            Object.assign(note.style, {
+              position: 'absolute',
+              left: `${rect.left + window.scrollX}px`,
+              top: `${rect.top + window.scrollY - 24}px`,
+              padding: '2px 6px',
+              background: '#fff7e6',
+              border: '1px solid #fa8c16',
+              borderRadius: '4px',
+              color: '#d46b08',
+              font: '12px/16px sans-serif',
+              pointerEvents: 'none',
+              zIndex: '2147483647',
+            });
+            document.body.append(note);
+          }
+        },
+        { attribute, ids: pending.map((box) => box.id) },
+      );
+    } catch {
+      // A frame that cannot be read is captured as is.
+    }
+  }
+  try {
+    await page.screenshot(options);
+  } finally {
+    for (const frame of marked)
+      await frame
+        .evaluate((attribute) => {
+          document.querySelectorAll(`[${attribute}-label]`).forEach((node) => node.remove());
+          document
+            .querySelectorAll(`[${attribute}]`)
+            .forEach((node) => node.removeAttribute(attribute));
+        }, attribute)
+        .catch(() => {});
+  }
+}
+
 export function assertInvoiceAmounts(observation) {
   const amounts = observation.frames.flatMap((frame) => frame.amounts || []);
   const url = new URL(observation.url);
@@ -232,6 +352,7 @@ export async function observePage(page) {
             disabled: !control.enabled,
           })),
         amounts: await evaluateWithin(frame, inspectInvoiceAmounts),
+        agreementBoxes: await evaluateWithin(frame, inspectAgreements, {}),
       });
   }
   return { at: new Date().toISOString(), url: page.url(), frames };

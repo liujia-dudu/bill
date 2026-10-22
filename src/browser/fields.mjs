@@ -71,6 +71,18 @@ export function inspectFields({ selector, attribute, frameIndex = 0, values = {}
         /[*＊]/.test(label),
       ),
       checked: node.checked === true,
+      // Segmented choices (e.g. Vant 公司/个人 buttons) mark the active one by ARIA or class.
+      pressed:
+        node.tagName === 'BUTTON' || ['radio', 'tab'].includes(node.getAttribute('role'))
+          ? ['aria-pressed', 'aria-checked', 'aria-selected'].some(
+              (name) => node.getAttribute(name) === 'true',
+            ) ||
+            (/(?:^|[\s_-])(?:active|selected|checked|current|primary)(?:$|\s)|is-(?:active|selected|checked)/.test(
+              node.className,
+            ) &&
+              !/--plain\b/.test(node.className))
+          : false,
+      inForm: Boolean(node.form),
       valuePresent: Boolean(value),
       valueMatches: Object.keys(values).find((key) => values[key] && values[key] === value) || null,
       options:

@@ -664,6 +664,16 @@ export class Runner {
         JSON.stringify({ blocked, actualSubmitted: false }, null, 2),
       );
       await this.rememberEntry(task, outcome, browsed, pageUsable);
+      // Light failed where normal then opened a definite page (a form, or a terminal
+      // page such as an issued invoice): light is the problem on this site.
+      const fallback = this.store.require('tasks', task.id).engineFallback;
+      if (
+        lightVersion !== undefined &&
+        outcome?.status !== 'awaiting_review' &&
+        ['normal_page_ready', 'normal_terminal_state'].includes(fallback?.result) &&
+        actualEngine === 'normal'
+      )
+        this.rememberEngine(entryHost, lightVersion, actualEngine, task.id, true);
       if (outcome?.status === 'awaiting_review' && lightVersion !== undefined)
         this.rememberEngine(
           entryHost,

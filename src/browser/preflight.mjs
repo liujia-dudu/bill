@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { AppError, entryRule, safeMessage } from '../core/validation.mjs';
+import { AppError, entryRule, errorDetail, safeMessage } from '../core/validation.mjs';
 import { openBrowser } from './session.mjs';
 import { installGuard, verifyGuard } from './guard.mjs';
 import { observePage, classifyPage, waitForInvoiceReady, watchInvoiceOrder } from './observe.mjs';
@@ -104,14 +104,31 @@ export async function prepareInvoiceBrowser({
     let returned = false;
     let guarded = false;
     try {
-      handle = await step(`连接 ${selected} 浏览器`, () =>
-        open(selected, {
-          onSession: (sessionId) => {
-            attempt.sessionId = sessionId;
-            onUpdate({ sessionId, cleanup: { status: 'active' } });
-          },
-        }),
-      );
+      const connect = () =>
+        step(`连接 ${selected} 浏览器`, () =>
+          open(selected, {
+            onSession: (sessionId) => {
+              attempt.sessionId = sessionId;
+              onUpdate({ sessionId, cleanup: { status: 'active' } });
+            },
+          }),
+        );
+      try {
+        handle = await connect();
+      } catch (error) {
+        // Nothing has reached the page yet, so one retry safely covers a transient
+        // cloud browser failure. Our own stops (cancel, missing config) and a session
+        // not confirmed closed are not retried.
+        if (
+          error instanceof AppError ||
+          (error.cleanup && !['closed', 'create_failed'].includes(error.cleanup.status))
+        )
+          throw error;
+        attempt.connectRetry = { detail: errorDetail(error) };
+        await publish();
+        check();
+        handle = await connect();
+      }
       onHandle(handle);
       if (selected === 'light') {
         // Remembered light incompatibility is tied to this version (see Runner).
@@ -242,7 +259,11 @@ export async function prepareInvoiceBrowser({
       returned = true;
       return { handle, orderRead, observation, state, engine: selected };
     } catch (error) {
-      attempt.error = { message: safeMessage(error), reasonCode: error.code || 'operation_failed' };
+      attempt.error = {
+        message: safeMessage(error),
+        reasonCode: error.code || 'operation_failed',
+        ...(error instanceof AppError ? {} : { detail: errorDetail(error) }),
+      };
       if (handle && !attempt.screenshot) await capture(handle, attempt);
       if (fallback) fallback.result = 'normal_check_failed';
       if (error.cleanup) attempt.cleanup = error.cleanup;

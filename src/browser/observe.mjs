@@ -359,7 +359,13 @@ export async function observePage(page) {
 }
 export function classifyPage(observation) {
   const text = observation.frames.map((frame) => frame.innerText || frame.contentText).join('\n');
-  if (/发票已开具|开票成功|已开票|发票代码[\s\S]*发票号码|下载发票|查看发票/.test(text))
+  // Delivery pages such as the tax bureau's 数电发票 viewer only show the invoice
+  // number and PDF/OFD/XML downloads.
+  if (
+    /发票已开具|开票成功|已开票|发票代码[\s\S]*发票号码|下载发票|查看发票|数电发票号码|您已接收到.{0,30}电子发票|(?:PDF|OFD|XML)\s*下载[\s\S]{0,40}(?:PDF|OFD|XML)\s*下载/.test(
+      text,
+    )
+  )
     return {
       status: 'already_issued',
       message: '页面显示这笔订单已开过发票，已停止重复填写；如确需重开请先核对上一条记录',

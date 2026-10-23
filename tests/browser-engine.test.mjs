@@ -15,6 +15,7 @@ import {
   pageAbnormality,
   engineRecheckReason,
 } from '../src/browser/preflight.mjs';
+import { classifyPage } from '../src/browser/observe.mjs';
 
 const url = 'https://invoice.example.invalid/invoice?order=synthetic';
 const form = `<h2>购买方信息</h2><label for="name">单位名称</label><input id="name">
@@ -608,4 +609,94 @@ test('a WeChat-only entry is remembered by path, 404s are not, and "重来" rech
   result = await run(url);
   assert.equal(result.status, 'failed');
   assert.equal(await runner.rules.entry(url), null);
+});
+
+// Synthetic copy of the tax bureau's 数电发票 delivery page.
+const issuedPage = `<h1>电子发票服务平台</h1><p>电子发票（普通发票）</p>
+  <p>购买方名称：--</p><p>数电发票号码：--</p><p>开票日期：--</p>
+  <button>PDF下载</button><button>OFD下载</button><button>XML下载</button>
+  <p>您好！您已接收到全面数字化的电子发票。</p>`;
+
+test('an issued-invoice delivery page is recognised before any filling', () => {
+  const page = (text) => ({ frames: [{ innerText: text, controls: [] }] });
+  assert.equal(
+    classifyPage(page('数电发票号码：--\nPDF下载\nOFD下载\nXML下载')).status,
+    'already_issued',
+  );
+  assert.equal(
+    classifyPage(page('您好！您已接收到全面数字化的电子发票。')).status,
+    'already_issued',
+  );
+  // A fill form that merely mentions a file format is still a form.
+  assert.equal(classifyPage(page('发票抬头\n收票邮箱\n发票将以 PDF 格式发送')), null);
+});
+
+test('light failing where normal opens an issued-invoice page is remembered too', async (t) => {
+  const env = await fixture({ light: errorPage, normal: issuedPage });
+  const store = new Store(env.directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: env.directory, openBrowser: env.open });
+  t.after(async () => {
+    await runner.close();
+    store.close();
+    await env.browser.close();
+  });
+  const profile = store.saveProfile(DEMO_PROFILE);
+  const task = store.createTask(
+    {
+      source: 'input',
+      mode: 'dry_run',
+      engine: 'light',
+      engineRequested: 'light',
+      url,
+      profile,
+      profileId: profile.id,
+    },
+    randomUUID(),
+  );
+  await runner.execute(task);
+  const result = store.require('tasks', task.id);
+  assert.equal(result.status, 'already_issued');
+  assert.ok(!result.modelCalls);
+  assert.ok(store.get('settings', `engine:${new URL(url).hostname}`));
+});
+
+test('a failed browser connection is retried once and its cause kept for diagnostics', async (t) => {
+  const env = await fixture({ normal: form });
+  t.after(() => env.browser.close());
+  let failures = 1;
+  const open = async (engine, options) => {
+    if (failures-- > 0)
+      throw new Error('Synthetic 503 from https://cloud.example.invalid/session?token=abc');
+    return env.open(engine, options);
+  };
+  const directory = path.join(env.directory, 'retry');
+  await mkdir(directory, { recursive: true });
+  const prepared = await prepareInvoiceBrowser({ engine: 'normal', url, directory, open });
+  t.after(() => prepared.handle.close());
+  assert.equal(prepared.engine, 'normal');
+  const check = JSON.parse(await readFile(path.join(directory, 'engine-check.json'), 'utf8'));
+  assert.match(check.attempts[0].connectRetry.detail, /Synthetic 503/);
+  assert.ok(!check.attempts[0].connectRetry.detail.includes('cloud.example.invalid'));
+  // Two failures in a row stop, with the cause recorded rather than only a generic message.
+  failures = 2;
+  const again = path.join(env.directory, 'retry-twice');
+  await mkdir(again, { recursive: true });
+  await assert.rejects(prepareInvoiceBrowser({ engine: 'normal', url, directory: again, open }));
+  const failed = JSON.parse(await readFile(path.join(again, 'engine-check.json'), 'utf8'));
+  assert.match(failed.attempts[0].error.detail, /Synthetic 503/);
+  // Our own stops are not retried.
+  let calls = 0;
+  await assert.rejects(
+    prepareInvoiceBrowser({
+      engine: 'normal',
+      url,
+      directory: again,
+      open: async () => {
+        calls++;
+        throw new AppError('尚未配置 Lexmount', 400, 'browser_not_configured');
+      },
+    }),
+    { code: 'browser_not_configured' },
+  );
+  assert.equal(calls, 1);
 });

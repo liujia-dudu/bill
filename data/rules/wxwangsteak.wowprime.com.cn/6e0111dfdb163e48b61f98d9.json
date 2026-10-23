@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "host": "wxwangsteak.wowprime.com.cn",
+  "path": "/InvoiceReq/InvoiceReq",
+  "hashPath": "",
+  "variants": {},
+  "entry": {
+    "status": "unsupported_browser",
+    "reasonCode": "wechat_oauth_required",
+    "message": "此流程需要微信内授权，本环境无法办理；请在微信中扫码开具",
+    "source": "page",
+    "sourceTaskId": "e3a2e0e2-2c38-47f0-a41d-6519c24877d8",
+    "learnedAt": "2026-10-23T08:15:35.733Z"
+  }
+}

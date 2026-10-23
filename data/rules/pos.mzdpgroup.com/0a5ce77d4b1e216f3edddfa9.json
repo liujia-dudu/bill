@@ -87,10 +87,10 @@
           "contract": "d4ff7de6788f70b2696bcf268e02c027b74395507bb77ff5d3c94bb3ece7d073"
         }
       ],
-      "sourceTaskId": "629352c9-7dcb-449c-8694-54ead05753e4",
+      "sourceTaskId": "2ee50370-fefa-4c9b-8933-e3c218c9f0d7",
       "level": "trusted",
-      "learnedAt": "2026-10-23T04:36:36.783Z",
-      "revision": "955f68cb4409c8a528745b63bf9ffa554dddcb54d295907de405fa0daf01f1d3"
+      "learnedAt": "2026-10-23T08:19:03.645Z",
+      "revision": "9c578586b63068f7847e1e1e30dc94867fb69bc41471ec61f7d176d4302b70b5"
     }
   }
 }

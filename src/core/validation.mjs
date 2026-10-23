@@ -132,6 +132,17 @@ export function entryRule(raw, { mainFrame = true } = {}) {
     };
   return null;
 }
+// The raw cause of an unexpected error for local diagnostics: addresses, long
+// tokens and configured keys are removed, and it is never shown in chat.
+export function errorDetail(error) {
+  let detail =
+    `${error?.name || 'Error'}${error?.statusCode ? ` ${error.statusCode}` : ''}: ${String(error?.message || error)}`
+      .replace(/(?:https?|wss?):\/\/[^\s"'<>]+/g, '[地址已隐藏]')
+      .replace(/[A-Za-z0-9_\-]{32,}/g, '[已隐藏]');
+  for (const key of ['LEXMOUNT_API_KEY', 'LEXMOUNT_PROJECT_ID', 'INVOICE_MODEL_API_KEY'])
+    if (process.env[key]) detail = detail.replaceAll(process.env[key], '[已隐藏]');
+  return detail.slice(0, 300);
+}
 export function safeMessage(error) {
   if (error instanceof AppError) return error.message;
   const message = String(error?.message || error).replace(

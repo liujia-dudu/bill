@@ -498,3 +498,56 @@ test('screenshot failure leaves nothing to learn', async () => {
     await browser.close();
   }
 });
+
+test('the process only mentions agreements a page actually has', async (t) => {
+  const { directory } = await workspace();
+  const agreement =
+    '<label><input type="checkbox" id="agree"> 我已阅读并同意<a href="#terms">《用户授权协议》</a></label>';
+  let content = html.replace('<button', `${agreement}<button`);
+  const browser = await chromium.launch({ headless: true });
+  const open = async (_engine, { onSession = () => {} } = {}) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.route(`https://${host}/**`, (route) =>
+      route.fulfill({ contentType: 'text/html; charset=utf-8', body: content }),
+    );
+    onSession(null);
+    return { page, context, close: async () => (await context.close(), { status: 'closed' }) };
+  };
+  const store = new Store(directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: directory, openBrowser: open });
+  t.after(async () => {
+    await runner.close();
+    store.close();
+    await browser.close();
+  });
+  const saved = store.saveProfile({ ...profile });
+  const run = async () => {
+    // Learn the current page by tool exploration, then let Runner replay it.
+    const { browser: learner, page, tools } = await browserFixture(directory, content);
+    await explore(tools);
+    await runner.rules.learn(pendingOf(tools, page), 'trusted');
+    await learner.close();
+    const task = store.createTask(
+      {
+        source: 'input',
+        mode: 'dry_run',
+        engine: 'normal',
+        engineRequested: 'normal',
+        url: `https://${host}/invoice?order=synthetic`,
+        profile: saved,
+        profileId: saved.id,
+      },
+      randomUUID(),
+    );
+    await runner.execute(task);
+    await runner.release(task.id);
+    const result = store.require('tasks', task.id);
+    assert.equal(result.status, 'awaiting_review', result.message);
+    assert.equal(result.executionSource, 'adapter');
+    return result.events.map((event) => event.message).filter((m) => m.includes('勾选'));
+  };
+  assert.deepEqual(await run(), ['已勾选《用户授权协议》']);
+  content = html;
+  assert.deepEqual(await run(), []);
+});

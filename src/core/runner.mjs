@@ -248,9 +248,10 @@ export class Runner {
       ),
     );
     aborted.catch(() => {});
-    const step = async (message, fn) => {
+    // A silent step is timed but only reports what it actually did, afterwards.
+    const step = async (message, fn, { silent = false } = {}) => {
       check();
-      this.store.event(task.id, 'processing', message);
+      if (!silent) this.store.event(task.id, 'processing', message);
       const at = performance.now();
       try {
         return await Promise.race([fn(), aborted]);
@@ -523,7 +524,16 @@ export class Runner {
             );
           // Ticking is not submitting: the program (never the fill Agent) ticks the
           // agreement so the screenshot matches what will be sent after confirmation.
-          const ticked = await step('勾选页面协议', () => tickAgreements(handle.page));
+          const ticked = await step('勾选页面协议', () => tickAgreements(handle.page), {
+            silent: true,
+          });
+          const names = (boxes) =>
+            boxes.map((box) => box.text.match(/《[^》]+》/g)?.join('') || box.text).join('、');
+          const done = ticked.filter((box) => box.checked);
+          const missed = ticked.filter((box) => !box.checked);
+          if (done.length) this.store.event(task.id, 'processing', `已勾选${names(done)}`);
+          if (missed.length)
+            this.store.event(task.id, 'processing', `${names(missed)}未能勾选，确认提交时再勾`);
           const after = await step('复核最终页面', () => observePage(handle.page));
           await writeFile(path.join(dir, 'observation-after.json'), JSON.stringify(after, null, 2));
           const abnormal = pageAbnormality(after);

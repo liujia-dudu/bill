@@ -10,7 +10,7 @@ import {
 } from '../browser/observe.mjs';
 import { companyNameKey, pageCompanyCandidate, validPageTaxId } from '../core/tax-id.mjs';
 import { inspectFields } from '../browser/fields.mjs';
-import { pageContract } from '../rules/contract.mjs';
+import { pageContract, stableId } from '../rules/contract.mjs';
 import { ruleActions } from '../rules/schema.mjs';
 
 const controlSelector =
@@ -784,7 +784,10 @@ export class InvoiceBrowserTools {
               ? {
                   target: {
                     frameIndex: target.frameIndex,
-                    identity: { ...target.identity },
+                    identity: {
+                      ...target.identity,
+                      stableId: stableId(target.identity.stableId),
+                    },
                     ...(['select', 'query_company', 'continue'].includes(action)
                       ? { text: target.control.text }
                       : {}),
@@ -841,8 +844,7 @@ export class InvoiceBrowserTools {
     return {
       checks: this.checks,
       signature: digest(this.trace.map(({ kind, identity }) => ({ kind, identity }))),
-      signatureComplete: false,
-      coverageGaps: ['真实提交及平台受理未验证', '模型探索轨迹尚未人工审核为可复用规则'],
+      coverageGaps: ['提交需用户在对话中确认截图后执行'],
       executionSource: 'agent',
     };
   }

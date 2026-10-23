@@ -1,64 +1,44 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { redactProfile } from '../agent/browser-tools.mjs';
-import {
-  domainName,
-  flowDigest,
-  profileFields,
-  RULE_SCHEMA_VERSION,
-  captureParameters,
-  validateFlow,
-} from './schema.mjs';
+import { domainName, profileFields, validateVariant } from './schema.mjs';
+import { recordKey } from './registry.mjs';
 
-export function buildCandidate({ tools, taskId, initialUrl, initialProfile, engine = 'normal' }) {
-  const url = new URL(initialUrl);
-  if (!tools.finished || !domainName(url.hostname)) return null;
-  const variant = {
-    id: 'default',
+export const PENDING_FILE = 'learned-steps.json';
+
+// The steps of a completed fill, redacted to profile references. They stay with the
+// task until the user's reply decides whether they become a hint or a trusted record.
+export function buildPending({ tools, taskId, initialUrl, initialProfile, engine = 'normal' }) {
+  if (!tools.finished) return null;
+  const key = recordKey(initialUrl);
+  if (!domainName(key.host)) return null;
+  const pending = {
+    key,
+    buyerType: initialProfile.type,
     engine,
-    match: {
-      protocol: url.protocol,
-      port: url.port,
-      pathPrefix: url.pathname,
-      hashPrefix: url.hash.split('?')[0],
-      parameters: captureParameters(url),
-      buyerType: initialProfile.type,
-      profileFields: profileFields(initialProfile),
-    },
+    profileFields: profileFields(initialProfile),
     steps: redactProfile(tools.preparationSteps, tools.profile),
+    sourceTaskId: taskId,
   };
-  const flow = {
-    schemaVersion: RULE_SCHEMA_VERSION,
-    id: url.hostname,
-    hosts: [url.hostname],
-    variants: [variant],
-  };
+  const { key: _key, buyerType: _buyerType, ...variant } = pending;
   try {
-    validateFlow(flow, url.hostname);
+    validateVariant({ ...variant, level: 'hint', learnedAt: 'pending' });
   } catch {
     return null;
   }
-  return {
-    sourceTaskId: taskId,
-    domain: url.hostname,
-    flowDigest: flowDigest(flow),
-    enabled: false,
-    reviewRequired: true,
-    signatureComplete: false,
-    actualSubmitted: false,
-    flow,
-    policy: { enabled: false, minSupervisedSuccess: 1, evidenceRefs: [], preparationReviews: [] },
-    coverageGaps: [
-      '页面契约摘要不等于完整协议及参数审核',
-      '仅为探索候选，需人工核定范围并验证固定填写，不自动生效',
-    ],
-  };
+  return pending;
 }
-export async function saveCandidate({ dataDir, ...args }) {
-  const candidate = buildCandidate(args);
-  if (!candidate) return null;
-  const directory = path.join(dataDir, 'adapters', 'candidates');
-  await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, `${args.taskId}.json`), JSON.stringify(candidate, null, 2));
-  return candidate;
+export async function savePending({ directory, ...args }) {
+  const pending = buildPending(args);
+  if (pending)
+    await writeFile(path.join(directory, PENDING_FILE), JSON.stringify(pending, null, 2));
+  return pending;
+}
+export async function readPending(directory) {
+  try {
+    return JSON.parse(await readFile(path.join(directory, PENDING_FILE), 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
 }

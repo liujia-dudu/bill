@@ -35,6 +35,8 @@ const FIX =
   /不对|不正确|错了|有误|写错|填错|选错|漏了|有问题|修正|修改|改成|改为|改一下|要改|应该是|应为|重新填|重填|换成/;
 const SUBMIT =
   /确认|提交|没问题|无误|正确|对的|没错|可以|好的|^好$|^行$|就这样|ok|okay|yes|开吧|开票吧|^是的?$/i;
+// Said alongside an abandon word: "filled correctly, but don't submit".
+const CORRECT = /正确|没问题|无误|对的|没错|都对|填对了|填得对/;
 const NEGATED =
   /不(?:确认|可以|行|是|好|提交)|别|不要|没有?确认|等一?下|等等|先别|稍等|再看|看看|吗|[?？]/;
 const GENERIC_FIX =
@@ -43,7 +45,7 @@ export function classifyDecision(text) {
   const value = String(text || '').trim();
   const abandon = ABANDON.test(value),
     fix = FIX.test(value);
-  if (abandon && !fix) return 'abandon';
+  if (abandon && !fix) return CORRECT.test(value) ? 'approve' : 'abandon';
   if (fix && !abandon) return 'fix';
   if (!abandon && !fix && SUBMIT.test(value) && !NEGATED.test(value)) return 'submit';
   return null;
@@ -123,7 +125,6 @@ export class ChatService {
       for (const task of tasks) {
         await remove('artifacts', task.id);
         await remove('harness', task.id);
-        await remove('adapters', 'candidates', `${task.id}.json`);
       }
       const sessions = await readdir(path.join(root, 'harness')).catch((error) => {
         if (error.code === 'ENOENT') return [];
@@ -160,7 +161,7 @@ export class ChatService {
         taskId: task.id,
         text: task.message,
       });
-    if (['abandoned', 'review_expired'].includes(task.status)) {
+    if (['abandoned', 'review_expired', 'approved_unsubmitted'].includes(task.status)) {
       // A dropped test fill is neither success nor failure; keep it out of experience.
       const previous = this.store
         .list('memories')
@@ -186,7 +187,6 @@ export class ChatService {
         engine: task.engine,
         reason: task.reasonCode || null,
         signature: task.parameterSignature || null,
-        signatureComplete: task.signatureComplete === true,
         actualSubmitted: task.actualSubmitted === true,
       });
       if (previous?.content !== content)
@@ -753,6 +753,10 @@ export class ChatService {
           result = compactTask(this.runner.abandon(task.id));
           break;
         }
+        if (decision === 'approve') {
+          result = compactTask(this.runner.approve(task.id));
+          break;
+        }
         if (!correctionDetail(message.text)) {
           // "不对" without saying what is wrong: keep the page and ask.
           result = {
@@ -765,6 +769,8 @@ export class ChatService {
         }
         if (task.actualSubmitted === true)
           throw new AppError('这张已经提交过，不能重新办理同一链接', 409, 'already_submitted_here');
+        // The user found the fill wrong: stop reusing the steps behind it.
+        await this.runner.forget(task.id);
         const profile =
           this.conversation(id).temporaryProfile ||
           (task.temporaryProfile ? task.profile : this.store.get('profiles', task.profileId));

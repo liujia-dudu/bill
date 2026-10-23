@@ -1,23 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ROOT } from '../src/server/config.mjs';
 import { InvoiceBrowserTools } from '../src/agent/browser-tools.mjs';
-import { RuleRegistry } from '../src/rules/registry.mjs';
+import { RuleRegistry, recordKey } from '../src/rules/registry.mjs';
 import { executeRule } from '../src/rules/executor.mjs';
-import { buildCandidate } from '../src/rules/candidate.mjs';
+import { buildPending, PENDING_FILE } from '../src/rules/candidate.mjs';
 import { pageContract } from '../src/rules/contract.mjs';
-import {
-  flowDigest,
-  validateFlow,
-  validatePolicy,
-  profileFields,
-  captureParameters,
-} from '../src/rules/schema.mjs';
+import { validateVariant, profileFields } from '../src/rules/schema.mjs';
 import { observePage } from '../src/browser/observe.mjs';
 import { installGuard, pageGuard } from '../src/browser/guard.mjs';
+import { Store } from '../src/storage/store.mjs';
+import { Runner } from '../src/core/runner.mjs';
 
 const host = 'invoice.example.invalid';
 const profile = {
@@ -26,6 +23,7 @@ const profile = {
   taxId: '91310000MA0000000Y',
   email: 'test@example.invalid',
 };
+const personal = { type: 'personal', title: '个人', email: profile.email };
 const html = `<section><h2>购买方信息</h2>
 <div class="field"><label for="name">单位名称 *</label><input id="name" required></div>
 <div class="field"><label for="tax">税号 *</label><input id="tax" required></div>
@@ -36,54 +34,7 @@ const html = `<section><h2>购买方信息</h2>
 async function workspace() {
   await mkdir(path.join(ROOT, 'test-results'), { recursive: true });
   const directory = await mkdtemp(path.join(ROOT, 'test-results', 'rules-'));
-  const rulesDir = path.join(directory, 'rules');
-  return { directory, rulesDir, registry: new RuleRegistry(rulesDir) };
-}
-function flowFor(signature) {
-  return {
-    schemaVersion: 1,
-    id: host,
-    hosts: [host],
-    variants: [
-      {
-        id: 'default',
-        engine: 'normal',
-        match: {
-          protocol: 'https:',
-          port: '',
-          pathPrefix: '/invoice',
-          hashPrefix: '',
-          parameters: captureParameters(new URL(observation.url)),
-          buyerType: 'enterprise',
-          profileFields: profileFields(profile),
-        },
-        steps: [{ action: 'finish', contract: signature }],
-      },
-    ],
-  };
-}
-function reviewed(flow) {
-  return {
-    enabled: false,
-    minSupervisedSuccess: 1,
-    evidenceRefs: [],
-    preparationReviews: [
-      {
-        variantId: 'default',
-        flowDigest: flowDigest(flow),
-        reviewedAt: '2026-10-16T00:00:00Z',
-        signatureComplete: true,
-        protocolReviewed: true,
-        agreementVerified: true,
-      },
-    ],
-  };
-}
-async function writeRule(rulesDir, flow, policy = reviewed(flow)) {
-  const directory = path.join(rulesDir, host);
-  await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, 'flow.json'), JSON.stringify(flow));
-  await writeFile(path.join(directory, 'policy.json'), JSON.stringify(policy));
+  return { directory, registry: new RuleRegistry(path.join(directory, 'rules')) };
 }
 const observation = {
   url: `https://${host}/invoice?order=synthetic`,
@@ -96,6 +47,17 @@ const observation = {
     },
   ],
 };
+function pendingFor(signature, overrides = {}) {
+  return {
+    key: recordKey(observation.url),
+    buyerType: 'enterprise',
+    engine: 'normal',
+    profileFields: profileFields(profile),
+    steps: [{ action: 'finish', contract: signature }],
+    sourceTaskId: 'synthetic',
+    ...overrides,
+  };
+}
 async function browserFixture(directory, content = html) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
@@ -124,237 +86,261 @@ async function explore(tools) {
   }
   await tools.dispatch('invoice_finish', {});
 }
+function pendingOf(tools, page, initialProfile = profile) {
+  return buildPending({ tools, taskId: 'synthetic', initialUrl: page.url(), initialProfile });
+}
+async function replayRoute(registry, page, replayProfile = profile) {
+  await page.reload();
+  await page.evaluate(pageGuard);
+  const route = await registry.select(await observePage(page), replayProfile);
+  assert.equal(route.source, 'adapter');
+  return route;
+}
 
-test('empty registry starts, and domain JSON additions/edits/deletions load without restart', async () => {
-  const { rulesDir, registry } = await workspace();
+test('records match by host + path and buyer type, ignoring order parameters', async () => {
+  const { registry } = await workspace();
   assert.equal((await registry.select(observation, profile)).reason, 'new_page');
-  const flow = flowFor(pageContract(observation, profile));
-  await writeRule(rulesDir, flow);
+  await registry.learn(pendingFor(pageContract(observation, profile)), 'trusted');
   const route = await registry.select(observation, profile);
   assert.equal(route.source, 'adapter');
-  assert.equal(
-    (
-      await registry.select(
-        { ...observation, url: `https://${host}.evil.invalid/invoice` },
-        profile,
-      )
-    ).source,
-    'agent',
-  );
-  assert.equal((await registry.select(observation, profile, 'light')).source, 'agent');
-  assert.equal(
-    (
-      await registry.select(
-        { ...observation, url: observation.url.replace('https:', 'http:') },
-        profile,
-      )
-    ).source,
-    'agent',
-  );
-  assert.equal(
-    (
-      await registry.select(
-        { ...observation, url: `${observation.url}&invoiceType=other` },
-        profile,
-      )
-    ).source,
-    'agent',
-  );
-  assert.equal(
-    (
-      await registry.select(
-        { ...observation, url: observation.url.replace('synthetic', 'another') },
-        profile,
-      )
-    ).source,
-    'agent',
-  );
+  assert.equal(route.learned.level, 'trusted');
+  const newOrder = { ...observation, url: observation.url.replace('synthetic', 'another') };
+  assert.equal((await registry.select(newOrder, profile)).source, 'adapter');
+  for (const url of [`https://${host}.evil.invalid/invoice`, `https://${host}/other`])
+    assert.equal((await registry.select({ ...observation, url }, profile)).reason, 'new_page');
+  // Same page under another engine, profile scope or layout: the steps only guide the model.
   const changed = structuredClone(observation);
   changed.frames[0].controls.push({ tag: 'input', required: true });
-  assert.equal((await registry.select(changed, profile)).source, 'agent');
-  flow.variants[0].steps[0].contract = pageContract(changed, profile);
-  await writeRule(rulesDir, flow);
-  assert.equal((await registry.select(changed, profile)).source, 'adapter');
-  flow.variants[0].match.parameters.query.order = { kind: 'transaction' };
-  await writeRule(rulesDir, flow);
-  assert.equal(
-    (
-      await registry.select(
-        { ...changed, url: changed.url.replace('synthetic', 'another') },
-        profile,
-      )
-    ).source,
-    'adapter',
+  for (const [current, currentProfile, engine] of [
+    [observation, profile, 'light'],
+    [observation, { ...profile, phone: '13800000000' }, 'normal'],
+    [changed, profile, 'normal'],
+  ]) {
+    const hinted = await registry.select(current, currentProfile, engine);
+    assert.equal(hinted.source, 'agent');
+    assert.equal(hinted.reason, 'record_not_matched');
+    assert.equal(hinted.hint.at(-1).action, 'finish');
+  }
+  // Buyer types learn separately.
+  assert.equal((await registry.select(observation, personal)).reason, 'new_page');
+  await registry.learn(
+    pendingFor(pageContract(observation, personal), {
+      buyerType: 'personal',
+      profileFields: profileFields(personal),
+    }),
+    'hint',
   );
-  await assert.rejects(registry.assertUnchanged(route.rule), { code: 'rule_changed' });
-  await rm(path.join(rulesDir, host), { recursive: true });
-  assert.equal((await registry.select(changed, profile)).reason, 'new_page');
-});
-
-test('unreviewed, partial, stale, ambiguous and malformed rules never run', async () => {
-  const { rulesDir, registry } = await workspace();
-  const flow = flowFor(pageContract(observation, profile));
-  const policy = reviewed(flow);
-  policy.preparationReviews = [];
-  await writeRule(rulesDir, flow, policy);
-  assert.equal((await registry.select(observation, profile)).source, 'agent');
-  const partial = reviewed(flow);
-  partial.preparationReviews[0].agreementVerified = false;
-  await writeRule(rulesDir, flow, partial);
-  assert.equal((await registry.select(observation, profile)).source, 'agent');
-  const stale = reviewed(flow);
-  flow.variants[0].match.pathPrefix = '/';
-  await writeRule(rulesDir, flow, stale);
-  assert.equal((await registry.select(observation, profile)).source, 'agent');
-  const second = structuredClone(flow.variants[0]);
-  second.id = 'second';
-  flow.variants.push(second);
-  const duplicatePolicy = reviewed(flow);
-  duplicatePolicy.preparationReviews.push({
-    ...duplicatePolicy.preparationReviews[0],
-    variantId: 'second',
-  });
-  await writeRule(rulesDir, flow, duplicatePolicy);
-  assert.equal((await registry.select(observation, profile)).reason, 'ambiguous_rules');
-  await writeFile(path.join(rulesDir, host, 'flow.json'), '{broken');
+  assert.equal((await registry.select(observation, personal)).reason, 'hint_record');
+  assert.equal((await registry.select(observation, profile)).source, 'adapter');
+  await writeFile(registry.file(recordKey(observation.url)), '{broken');
   assert.equal((await registry.select(observation, profile)).reason, 'invalid_rule');
 });
 
-test('schema excludes executable code, arbitrary values and all submission actions', () => {
-  const flow = flowFor('a'.repeat(64));
-  assert.equal(validateFlow(flow, host), flow);
-  for (const action of ['submit', 'click', 'evaluate', 'fetch', 'agree']) {
-    const unsafe = structuredClone(flow);
-    unsafe.variants[0].steps.unshift({ action, contract: 'a'.repeat(64) });
-    assert.throws(() => validateFlow(unsafe, host), { code: 'invalid_rule' });
-  }
-  const script = structuredClone(flow);
-  script.variants[0].script = 'dangerous()';
-  assert.throws(() => validateFlow(script, host), { code: 'invalid_rule' });
-  assert.throws(() => validatePolicy({ ...reviewed(flow), enabled: true }, flow), {
-    code: 'invalid_rule',
-  });
+test('a hint never downgrades a trusted record, and discard only drops the matching revision', async () => {
+  const { registry } = await workspace();
+  const signature = pageContract(observation, profile);
+  const key = recordKey(observation.url);
+  const trusted = await registry.learn(pendingFor(signature), 'trusted');
+  assert.equal(await registry.learn(pendingFor(signature), 'hint'), null);
+  assert.equal((await registry.select(observation, profile)).learned.revision, trusted);
+  assert.equal(await registry.discard(key, 'enterprise', ['c'.repeat(64)]), false);
+  assert.equal((await registry.select(observation, profile)).source, 'adapter');
+  await registry.learn(
+    pendingFor(signature, { buyerType: 'personal', profileFields: profileFields(personal) }),
+    'hint',
+  );
+  assert.equal(await registry.discard(key, 'enterprise', [trusted]), true);
+  assert.equal((await registry.select(observation, profile)).reason, 'new_page');
+  assert.equal((await registry.select(observation, personal)).reason, 'hint_record');
+  await registry.learn(pendingFor(signature), 'hint');
+  await registry.learn(pendingFor(signature), 'trusted');
+  assert.equal((await registry.select(observation, profile)).source, 'adapter');
 });
 
-test('actual tool exploration exports a domain candidate and generic replay uses current profile without submission', async () => {
-  const { directory, rulesDir, registry } = await workspace();
+test('schema excludes executable code, arbitrary values and all submission actions', () => {
+  const variant = {
+    level: 'trusted',
+    engine: 'normal',
+    profileFields: profileFields(profile),
+    steps: [{ action: 'finish', contract: 'a'.repeat(64) }],
+    sourceTaskId: 'synthetic',
+    learnedAt: '2026-10-23T00:00:00Z',
+  };
+  assert.equal(validateVariant(variant), variant);
+  for (const action of ['submit', 'click', 'evaluate', 'fetch', 'agree']) {
+    const unsafe = structuredClone(variant);
+    unsafe.steps.unshift({ action, contract: 'a'.repeat(64) });
+    assert.throws(() => validateVariant(unsafe), { code: 'invalid_rule' });
+  }
+  const script = structuredClone(variant);
+  script.script = 'dangerous()';
+  assert.throws(() => validateVariant(script), { code: 'invalid_rule' });
+  const value = structuredClone(variant);
+  value.steps.unshift({
+    action: 'fill',
+    target: { frameIndex: 0, identity: { tag: 'input' } },
+    valueRef: 'password',
+    contract: 'a'.repeat(64),
+  });
+  assert.throws(() => validateVariant(value), { code: 'invalid_rule' });
+});
+
+test('a completed fill is replayed for a new order and profile without the model or submission', async () => {
+  const { directory, registry } = await workspace();
   const { browser, page, tools } = await browserFixture(directory);
   try {
     await explore(tools);
-    const candidate = buildCandidate({
-      tools,
-      taskId: 'synthetic',
-      initialUrl: page.url(),
-      initialProfile: profile,
-    });
-    assert.ok(candidate);
-    assert.equal(candidate.signatureComplete, false);
-    assert.equal(candidate.actualSubmitted, false);
-    assert.equal(candidate.flow.variants[0].steps.at(-1).action, 'finish');
-    assert.ok(!JSON.stringify(candidate).includes(profile.email));
-    assert.ok(!JSON.stringify(candidate).includes(profile.title));
-    validateFlow(candidate.flow, host);
+    const pending = pendingOf(tools, page);
+    assert.equal(pending.steps.at(-1).action, 'finish');
+    assert.ok(!JSON.stringify(pending).includes(profile.email));
+    assert.ok(!JSON.stringify(pending).includes(profile.title));
+    await registry.learn(pending, 'trusted');
     const nextProfile = {
       ...profile,
       title: 'Another Synthetic Company',
       email: 'another@example.invalid',
     };
-    await writeRule(rulesDir, candidate.flow, candidate.policy);
-    await page.reload();
-    assert.equal((await registry.select(await observePage(page), nextProfile)).source, 'agent');
-    await writeRule(rulesDir, candidate.flow);
-    const route = await registry.select(await observePage(page), nextProfile);
-    assert.equal(route.source, 'adapter');
+    await page.goto(`https://${host}/invoice?order=another`);
+    const route = await replayRoute(registry, page, nextProfile);
+    const replay = path.join(directory, 'replay');
+    await mkdir(replay);
     const result = await executeRule({
       route,
-      registry,
+      taskId: 'replay',
       page,
       profile: nextProfile,
-      directory,
+      directory: replay,
       demo: true,
     });
     assert.equal(result.modelCalls, 0);
     assert.ok(result.checks.every((check) => check.matches));
     assert.equal(await page.locator('#mail').inputValue(), nextProfile.email);
     assert.equal(await page.evaluate(() => window.submissionCount), 0);
-    assert.ok((await readFile(path.join(directory, 'pre-submit.png'))).length);
-    const snapshot = JSON.parse(await readFile(path.join(directory, 'rule-snapshot.json'), 'utf8'));
-    assert.equal(snapshot.revision, result.ruleRevision);
+    assert.ok((await readFile(path.join(replay, 'pre-submit.png'))).length);
+    const snapshot = JSON.parse(await readFile(path.join(replay, 'rule-snapshot.json'), 'utf8'));
+    assert.equal(snapshot.revision, result.learnedFrom.revision);
+    // The replay leaves its own pending steps for the user's next decision.
+    const again = JSON.parse(await readFile(path.join(replay, PENDING_FILE), 'utf8'));
+    assert.ok(!JSON.stringify(again).includes(nextProfile.email));
+    assert.equal(again.steps.length, pending.steps.length);
   } finally {
     await browser.close();
   }
 });
 
-test('a rule change between actions stops before the next fill', async () => {
-  const { directory, rulesDir, registry } = await workspace();
-  const { browser, page, tools } = await browserFixture(directory);
+test('Runner learns hints on abandon or expiry, trusted on approval, and forgets on correction', async () => {
+  const { directory } = await workspace();
+  const store = new Store(directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: directory });
   try {
-    await explore(tools);
-    const candidate = buildCandidate({
-      tools,
-      taskId: 'synthetic',
-      initialUrl: page.url(),
-      initialProfile: profile,
-    });
-    await writeRule(rulesDir, candidate.flow);
-    await page.reload();
-    const route = await registry.select(await observePage(page), profile);
-    await assert.rejects(
-      executeRule({
-        route,
-        registry,
-        page,
-        profile: { ...profile },
-        directory,
-        demo: true,
-        onProgress: async () => {
-          await writeFile(
-            path.join(rulesDir, host, 'policy.json'),
-            JSON.stringify({
-              ...reviewed(candidate.flow),
-              preparationReviews: [],
-            }),
-          );
-        },
-      }),
-      { code: 'rule_changed' },
+    const signature = pageContract(observation, profile);
+    const prepare = async () => {
+      const task = store.createTask(
+        { source: 'input', mode: 'dry_run', url: observation.url, profile },
+        randomUUID(),
+      );
+      const dir = path.join(directory, 'artifacts', task.id);
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        path.join(dir, PENDING_FILE),
+        JSON.stringify(pendingFor(signature, { sourceTaskId: task.id })),
+      );
+      store.patchTask(task.id, { status: 'awaiting_review' });
+      runner.live.set(task.id, { handle: { close: async () => ({ status: 'closed' }) } });
+      return task;
+    };
+    const settle = () => Promise.allSettled([...runner.learning]);
+    const abandoned = await prepare();
+    runner.abandon(abandoned.id);
+    await settle();
+    assert.equal((await runner.rules.select(observation, profile)).reason, 'hint_record');
+    assert.equal(store.require('tasks', abandoned.id).learned.level, 'hint');
+    const approved = await prepare();
+    assert.equal(runner.approve(approved.id).status, 'approved_unsubmitted');
+    await settle();
+    const route = await runner.rules.select(observation, profile);
+    assert.equal(route.source, 'adapter');
+    // A later task replayed the trusted record and the user said it was wrong.
+    const replayed = store.createTask(
+      { source: 'input', mode: 'dry_run', url: observation.url, profile },
+      randomUUID(),
     );
-    assert.equal(await page.locator('#tax').inputValue(), '');
+    store.patchTask(replayed.id, { learnedFrom: route.learned });
+    await runner.forget(replayed.id);
+    assert.equal((await runner.rules.select(observation, profile)).reason, 'new_page');
+    // Correcting an expired task drops the hint it left behind.
+    const expired = await prepare();
+    await runner.expire(expired.id);
+    await settle();
+    assert.equal((await runner.rules.select(observation, profile)).reason, 'hint_record');
+    await runner.forget(expired.id);
+    assert.equal((await runner.rules.select(observation, profile)).reason, 'new_page');
+  } finally {
+    await runner.close();
+    store.close();
+  }
+});
+
+test('framework ids that change on every load do not stop a replay', async () => {
+  const { directory, registry } = await workspace();
+  // Element Plus style: el-id-<random per load>-<index>.
+  const content = `<label for="a">公司名称</label><input id="a" required>
+<label for="b">税号</label><input id="b" required>
+<label for="c">收票邮箱</label><input id="c" required>
+<button type="button" id="submit">提交开票</button>
+<script>const n=Math.floor(Math.random()*9000)+1000;
+document.querySelectorAll('input').forEach((el,i)=>{const id='el-id-'+n+'-'+(i+1);document.querySelector('label[for='+el.id+']').htmlFor=id;el.id=id;});
+window.submissionCount=0;document.querySelector('#submit').onclick=()=>window.submissionCount++;</script>`;
+  const { browser, page, tools } = await browserFixture(directory, content);
+  const scoped = { ...profile };
+  try {
+    for (const [label, valueRef] of [
+      ['公司名称', 'title'],
+      ['税号', 'taxId'],
+      ['收票邮箱', 'email'],
+    ]) {
+      const observed = await tools.observe();
+      const control = observed.frames
+        .flatMap((frame) => frame.controls)
+        .find((c) => c.label === label);
+      await tools.dispatch('invoice_fill', { elementRef: control.elementRef, valueRef });
+    }
+    await tools.dispatch('invoice_finish', {});
+    const pending = pendingOf(tools, page, scoped);
+    assert.ok(!JSON.stringify(pending).includes('el-id-'));
+    await registry.learn(pending, 'trusted');
+    const before = await page.locator('input').first().getAttribute('id');
+    const route = await replayRoute(registry, page, scoped);
+    assert.notEqual(await page.locator('input').first().getAttribute('id'), before);
+    const result = await executeRule({
+      route,
+      page,
+      profile: { ...scoped },
+      directory,
+      demo: true,
+    });
+    assert.equal(result.modelCalls, 0);
+    assert.ok(result.checks.every((check) => check.matches));
     assert.equal(await page.evaluate(() => window.submissionCount), 0);
   } finally {
     await browser.close();
   }
 });
 
-test('incomplete exploration cannot create a candidate, and mismatched replay fills nothing', async () => {
-  const { directory, rulesDir, registry } = await workspace();
+test('incomplete exploration leaves nothing to learn, and mismatched replay fills nothing', async () => {
+  const { directory, registry } = await workspace();
   const { browser, page, tools } = await browserFixture(directory);
   try {
-    assert.equal(
-      buildCandidate({
-        tools,
-        taskId: 'synthetic',
-        initialUrl: page.url(),
-        initialProfile: profile,
-      }),
-      null,
-    );
+    assert.equal(pendingOf(tools, page), null);
     await explore(tools);
-    const candidate = buildCandidate({
-      tools,
-      taskId: 'synthetic',
-      initialUrl: page.url(),
-      initialProfile: profile,
-    });
-    await writeRule(rulesDir, candidate.flow);
-    await page.reload();
-    const route = await registry.select(await observePage(page), profile);
+    await registry.learn(pendingOf(tools, page), 'trusted');
+    const route = await replayRoute(registry, page);
     await page.locator('#tax').evaluate((node) => node.setAttribute('aria-required', 'false'));
     await page.locator('label[for=tax]').evaluate((node) => {
       node.textContent = '新的必填字段';
     });
     await assert.rejects(
-      executeRule({ route, registry, page, profile: { ...profile }, directory, demo: true }),
+      executeRule({ route, page, profile: { ...profile }, directory, demo: true }),
       { code: 'rule_mismatch' },
     );
     assert.equal(await page.locator('#name').inputValue(), '');
@@ -364,7 +350,7 @@ test('incomplete exploration cannot create a candidate, and mismatched replay fi
 });
 
 test('generic company lookup replay verifies page tax and keeps missing-tax profile scope', async () => {
-  const { directory, rulesDir, registry } = await workspace();
+  const { directory, registry } = await workspace();
   const content = await readFile(
     new URL('./fixtures/pages/invoice-company-demo.html', import.meta.url),
     'utf8',
@@ -384,25 +370,16 @@ test('generic company lookup replay verifies page tax and keeps missing-tax prof
     await act('invoice_read_tax', (c) => c.stableId === 'credit');
     await act('invoice_fill', (c) => c.stableId === 'email', { valueRef: 'email' });
     await tools.dispatch('invoice_finish', {});
-    const candidate = buildCandidate({
-      tools,
-      taskId: 'synthetic-tax',
-      initialUrl: page.url(),
-      initialProfile,
-    });
-    validateFlow(candidate.flow, host);
-    assert.ok(!candidate.flow.variants[0].match.profileFields.includes('taxId'));
-    assert.ok(!JSON.stringify(candidate).includes(initialProfile.title));
-    assert.ok(!JSON.stringify(candidate).includes(profile.taxId));
-    await writeRule(rulesDir, candidate.flow);
-    await page.reload();
+    const pending = pendingOf(tools, page, initialProfile);
+    assert.ok(!pending.profileFields.includes('taxId'));
+    assert.ok(!JSON.stringify(pending).includes(initialProfile.title));
+    assert.ok(!JSON.stringify(pending).includes(profile.taxId));
+    await registry.learn(pending, 'trusted');
     let evidence;
     const replayProfile = { ...initialProfile };
-    const route = await registry.select(await observePage(page), replayProfile);
-    assert.equal(route.source, 'adapter');
+    const route = await replayRoute(registry, page, replayProfile);
     const result = await executeRule({
       route,
-      registry,
       page,
       profile: replayProfile,
       directory,
@@ -421,7 +398,7 @@ test('generic company lookup replay verifies page tax and keeps missing-tax prof
 });
 
 test('generic native selection and multi-step replay preserve per-step screenshots', async () => {
-  const { directory, rulesDir, registry } = await workspace();
+  const { directory, registry } = await workspace();
   const content = await readFile(
     new URL('./fixtures/pages/invoice-agent-demo.html', import.meta.url),
     'utf8',
@@ -441,21 +418,12 @@ test('generic native selection and multi-step replay preserve per-step screensho
     await act('invoice_continue', (c) => c.stableId === 'next');
     await act('invoice_fill', (c) => c.stableId === 'delivery', { valueRef: 'email' });
     await tools.dispatch('invoice_finish', {});
-    const candidate = buildCandidate({
-      tools,
-      taskId: 'synthetic-multistep',
-      initialUrl: page.url(),
-      initialProfile: profile,
-    });
-    assert.ok(
-      candidate.flow.variants[0].steps.some((step) => step.action === 'continue' && step.target),
-    );
-    await writeRule(rulesDir, candidate.flow);
-    await page.reload();
-    const route = await registry.select(await observePage(page), profile);
+    const pending = pendingOf(tools, page);
+    assert.ok(pending.steps.some((step) => step.action === 'continue' && step.target));
+    await registry.learn(pending, 'trusted');
+    const route = await replayRoute(registry, page);
     const result = await executeRule({
       route,
-      registry,
       page,
       profile: { ...profile },
       directory,
@@ -471,25 +439,18 @@ test('generic native selection and multi-step replay preserve per-step screensho
 });
 
 test('mid-flow mismatch preserves verified progress for Harness handoff', async () => {
-  const { directory, rulesDir, registry } = await workspace();
+  const { directory, registry } = await workspace();
   const { browser, page, tools } = await browserFixture(directory);
   try {
     await explore(tools);
-    const candidate = buildCandidate({
-      tools,
-      taskId: 'synthetic-handoff',
-      initialUrl: page.url(),
-      initialProfile: profile,
-    });
-    const flow = candidate.flow;
-    flow.variants[0].steps[1].contract = 'b'.repeat(64);
-    flow.variants[0].steps[1].waitMs = 0;
-    await writeRule(rulesDir, flow);
-    await page.reload();
-    const route = await registry.select(await observePage(page), profile);
+    const pending = pendingOf(tools, page);
+    pending.steps[1].contract = 'b'.repeat(64);
+    pending.steps[1].waitMs = 0;
+    await registry.learn(pending, 'trusted');
+    const route = await replayRoute(registry, page);
     let handoff;
     await assert.rejects(
-      executeRule({ route, registry, page, profile: { ...profile }, directory, demo: true }),
+      executeRule({ route, page, profile: { ...profile }, directory, demo: true }),
       (error) => {
         handoff = error.preparationTools;
         return error.code === 'rule_mismatch';
@@ -514,9 +475,9 @@ test('mid-flow mismatch preserves verified progress for Harness handoff', async 
   }
 });
 
-test('screenshot failure cannot export a completed candidate', async () => {
+test('screenshot failure leaves nothing to learn', async () => {
   const { directory } = await workspace();
-  const { browser, tools } = await browserFixture(directory);
+  const { browser, page, tools } = await browserFixture(directory);
   try {
     for (const [id, valueRef] of [
       ['name', 'title'],
@@ -532,15 +493,7 @@ test('screenshot failure cannot export a completed candidate', async () => {
     };
     await assert.rejects(tools.dispatch('invoice_finish', {}), /screenshot failure/);
     assert.equal(tools.finished, false);
-    assert.equal(
-      buildCandidate({
-        tools,
-        taskId: 'synthetic-failed-shot',
-        initialUrl: tools.page.url(),
-        initialProfile: profile,
-      }),
-      null,
-    );
+    assert.equal(pendingOf(tools, page), null);
   } finally {
     await browser.close();
   }

@@ -19,7 +19,6 @@
     "test:harness": "node tests/harness-live.mjs",
     "test:chat": "node tests/chat-live.mjs",
     "browser:install": "playwright install chromium",
-    "check:adapters": "node tools/check-adapters.mjs",
     "check:publish": "node tools/check-publish.mjs --staged",
     "cleanup": "node tools/cleanup.mjs"
   },

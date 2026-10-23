@@ -499,3 +499,59 @@ test('cancel stops a step stuck on the page immediately and closes the browser',
   assert.ok(env.order.includes('close:light'));
   assert.ok(!env.order.includes('open:normal'));
 });
+
+test('a site where light failed goes straight to normal until light changes version', async (t) => {
+  const env = await fixture({ light: form, normal: form });
+  let lightVersion = 'light-1';
+  const open = async (engine, options) => {
+    const handle = await env.open(engine, options);
+    handle.browser = { version: () => (engine === 'light' ? lightVersion : 'normal-1') };
+    return handle;
+  };
+  const store = new Store(env.directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: env.directory, openBrowser: open });
+  t.after(async () => {
+    await runner.close();
+    store.close();
+    await env.browser.close();
+  });
+  const profile = store.saveProfile(DEMO_PROFILE);
+  const host = new URL(url).hostname;
+  runner.rules.select = async () => {
+    throw new AppError('Synthetic routing stop', 400, 'synthetic_stop');
+  };
+  const run = async () => {
+    env.order.length = 0;
+    const task = store.createTask(
+      {
+        source: 'input',
+        mode: 'dry_run',
+        engine: 'light',
+        engineRequested: 'light',
+        url,
+        profile,
+        profileId: profile.id,
+      },
+      randomUUID(),
+    );
+    await runner.execute(task);
+    return store.require('tasks', task.id);
+  };
+  let result = await run();
+  assert.equal(env.order[0], 'open:light');
+  assert.equal(store.get('settings', 'light-version').value, 'light-1');
+  // Light failed on this site and normal reached the review screenshot.
+  runner.rememberEngine(host, 'light-1', 'normal', result.id, true);
+  result = await run();
+  assert.deepEqual(env.order, ['open:normal', 'close:normal']);
+  assert.equal(result.engine, 'normal');
+  assert.equal(result.engineMemory.lightVersion, 'light-1');
+  // Any task seeing a new light version makes this site try light once more.
+  store.write('settings', { id: 'light-version', value: 'light-2' });
+  lightVersion = 'light-2';
+  result = await run();
+  assert.equal(env.order[0], 'open:light');
+  assert.ok(!result.engineMemory);
+  runner.rememberEngine(host, 'light-2', 'light', result.id, false);
+  assert.ok(!store.get('settings', `engine:${host}`));
+});

@@ -113,6 +113,14 @@ export async function prepareInvoiceBrowser({
         }),
       );
       onHandle(handle);
+      if (selected === 'light') {
+        // Remembered light incompatibility is tied to this version (see Runner).
+        try {
+          attempt.browserVersion = handle.browser?.version() || null;
+        } catch {
+          attempt.browserVersion = null;
+        }
+      }
       onUpdate({ engine: selected });
       orderRead = watchInvoiceOrder(handle.page);
       handle.page.setDefaultTimeout(15000);

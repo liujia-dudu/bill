@@ -140,6 +140,9 @@ test('decisions are read from the user text, never from the model', () => {
     assert.equal(classifyDecision(text), 'fix', text);
   for (const text of ['放弃', '算了，不提交了', '不要了', '先不开了'])
     assert.equal(classifyDecision(text), 'abandon', text);
+  for (const text of ['填得没问题，先不提交', '都对，但不开了', '信息正确，算了不提交'])
+    assert.equal(classifyDecision(text), 'approve', text);
+  assert.equal(classifyDecision('先不提交，看看对不对'), null);
   for (const text of ['可以吗？', '等一下', '我再看看', '你好', '不确认', '别提交了但是邮箱不对'])
     assert.notEqual(classifyDecision(text), 'submit', text);
   assert.equal(correctionDetail('不对'), false);
@@ -328,6 +331,55 @@ test('second confirmations are accepted; new fields or no request stop honestly'
         mode,
       );
     }
+  } finally {
+    await e.close();
+  }
+});
+
+test('only an error the page shows after the click is a failure; a quiet page is submitted', async () => {
+  const e = await environment();
+  try {
+    for (const [mode, status, actualSubmitted, message] of [
+      ['quiet', 'submitted_unverified', true, /^已提交$/],
+      ['rejected', 'submit_failed', false, /邮箱格式不正确.*重来/],
+      ['silent', 'submit_failed', false, /没有反应.*重来/],
+    ]) {
+      const { task } = await e.review(mode);
+      await e.decide(e.say('确认提交'), {
+        taskId: task.id,
+        decision: 'submit',
+        sourceQuote: '确认提交',
+      });
+      await e.runner.submitting.get(task.id);
+      const done = e.store.get('tasks', task.id);
+      assert.equal(done.status, status, mode);
+      assert.equal(done.actualSubmitted, actualSubmitted, mode);
+      assert.match(done.message, message, mode);
+    }
+  } finally {
+    await e.close();
+  }
+});
+
+test('"filled correctly, but not submitting" closes the page without submitting', async () => {
+  const e = await environment();
+  try {
+    const { task, received, closed } = await e.review('success');
+    const result = await e.decide(e.say('填得没问题，先不提交'), {
+      decision: 'approve',
+      sourceQuote: '填得没问题，先不提交',
+    });
+    assert.equal(result.status, 'approved_unsubmitted');
+    await e.runner.waitForTask(task.id);
+    assert.equal(closed(), 1);
+    assert.equal(e.store.get('tasks', task.id).actualSubmitted, false);
+    assert.ok(!received.some((r) => r.startsWith('POST')));
+    // The model cannot turn a plain "give up" into an approval.
+    const other = await e.review('success');
+    await assert.rejects(
+      e.decide(e.say('算了'), { taskId: other.task.id, decision: 'approve', sourceQuote: '算了' }),
+      { code: 'decision_mismatch' },
+    );
   } finally {
     await e.close();
   }

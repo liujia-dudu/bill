@@ -26,6 +26,11 @@
               '</span></label> 我已阅读并同意<a href="#agreement">《用户授权协议》</a></div>' +
               '<label><input type="checkbox" id="marketing" /> 同意接收营销短信</label>',
           );
+      // An error-like notice already on the page must not read as a rejected submit.
+      if (mode === 'quiet' || mode === 'rejected')
+        document
+          .querySelector('#after')
+          .insertAdjacentHTML('beforebegin', '<p>温馨提示：抬头填写有误将无法报销</p>');
       const send = () =>
         fetch('/submit-endpoint', { method: 'POST', body: '{}' }).then(() =>
           fetch('/submit-status').then((response) => response.json()),
@@ -58,6 +63,13 @@
           document.body.append(box);
         } else if (mode === 'silent') {
           window.submitted = 0;
+        } else if (mode === 'quiet') {
+          // Sent, then nothing on the page changes.
+          send();
+        } else if (mode === 'rejected') {
+          send().then(() => {
+            document.querySelector('#after').textContent = '提交失败：邮箱格式不正确';
+          });
         } else done();
       };
     </script>

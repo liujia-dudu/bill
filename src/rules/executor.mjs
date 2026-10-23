@@ -4,8 +4,9 @@ import { InvoiceBrowserTools } from '../agent/browser-tools.mjs';
 import { observePage } from '../browser/observe.mjs';
 import { AppError, fieldNames } from '../core/validation.mjs';
 import { companyNameKey, pageCompanyCandidate } from '../core/tax-id.mjs';
-import { pageContract } from './contract.mjs';
+import { pageContract, stableId } from './contract.mjs';
 import { ruleActions } from './schema.mjs';
+import { savePending } from './candidate.mjs';
 
 const mismatch = () => new AppError('规则与当前页面或控件不一致，需重新分析', 400, 'rule_mismatch');
 function expand(text, profile) {
@@ -21,7 +22,9 @@ function findTarget(tools, step, profile) {
       ref.control.visible &&
       ref.control.enabled &&
       Object.entries(step.target.identity).every(
-        ([key, value]) => ref.identity[key] === expand(value, profile),
+        ([key, value]) =>
+          (key === 'stableId' ? stableId(ref.identity[key]) : ref.identity[key]) ===
+          expand(value, profile),
       ) &&
       (step.target.text === undefined || ref.control.text === expand(step.target.text, profile)),
   );
@@ -44,39 +47,28 @@ function findTarget(tools, step, profile) {
 
 export async function executeRule({
   route,
-  registry,
   page,
   profile,
   directory,
+  taskId = 'replay',
   check = () => {},
   ...options
 }) {
-  const { rule, variant } = route;
-  await registry.assertUnchanged(rule);
+  // The variant was read once at selection; later learning cannot change this run.
+  const { variant, learned } = route;
   await writeFile(
     path.join(directory, 'rule-snapshot.json'),
-    JSON.stringify(
-      {
-        domain: rule.domain,
-        revision: rule.revision,
-        flow: rule.flow,
-        policy: rule.policy,
-        variantId: variant.id,
-        prepareOnly: true,
-        actualSubmitted: false,
-      },
-      null,
-      2,
-    ),
+    JSON.stringify({ ...learned, variant, prepareOnly: true, actualSubmitted: false }, null, 2),
   );
   const tools = new InvoiceBrowserTools({ page, profile, directory, check, ...options });
+  const initialUrl = tools.initialUrl;
+  const initialProfile = tools.initialProfile;
   try {
     for (const step of variant.steps) {
       const started = Date.now();
       let elementRef;
       for (;;) {
         check();
-        await registry.assertUnchanged(rule);
         await tools.observe();
         const current = pageContract(await observePage(page), profile);
         elementRef = step.action === 'finish' ? null : findTarget(tools, step, profile);
@@ -84,7 +76,6 @@ export async function executeRule({
         if (Date.now() - started >= (step.waitMs ?? 1500)) throw mismatch();
         await page.waitForTimeout(100);
       }
-      await registry.assertUnchanged(rule);
       check();
       await tools.dispatch(ruleActions[step.action], {
         ...(elementRef ? { elementRef } : {}),
@@ -92,21 +83,24 @@ export async function executeRule({
         ...(step.option ? { option: expand(step.option, profile) } : {}),
       });
     }
-    await registry.assertUnchanged(rule);
   } catch (error) {
     error.preparationTools = tools;
     throw error;
   }
+  await savePending({
+    tools,
+    taskId,
+    directory,
+    initialUrl,
+    initialProfile,
+    engine: variant.engine,
+  });
   return {
     ...tools.result(),
     executionSource: 'adapter',
     signature: route.signature,
-    signatureComplete: true,
     modelCalls: 0,
-    ruleDomain: rule.domain,
-    ruleId: rule.flow.id,
-    ruleVariant: variant.id,
-    ruleRevision: rule.revision,
-    coverageGaps: ['仅复用已审核的填写流程，未真实提交，平台受理及真实证据尚未验证'],
+    learnedFrom: learned,
+    coverageGaps: ['复用此前用户认可的填写步骤，提交仍需用户在对话中确认截图'],
   };
 }

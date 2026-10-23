@@ -20,7 +20,7 @@ export function configuration(overrides = {}) {
   };
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535)
     throw new Error('Invalid port');
-  for (const name of ['', 'uploads', 'artifacts', 'adapters', 'logs', 'tmp'])
+  for (const name of ['', 'uploads', 'artifacts', 'rules', 'logs', 'tmp'])
     mkdirSync(path.join(config.dataDir, name), { recursive: true });
   return config;
 }

@@ -31,9 +31,10 @@ const STATUS = {
   simulated_success: '已核对',
   submitting: '正在提交',
   submitted: '已提交',
-  submitted_unverified: '已提交待核实',
+  submitted_unverified: '已提交',
   submit_failed: '未提交',
   abandoned: '已放弃',
+  approved_unsubmitted: '已确认未提交',
   review_expired: '确认超时',
   corrected: '已重填',
   observed: '检查完成',
@@ -614,6 +615,17 @@ function Profile({ value: p }) {
     </div>
   );
 }
+// How this fill was produced, from the route Runner recorded.
+function fillSource(t) {
+  const calls = t.modelCalls || 0;
+  if (t.executionSource === 'adapter') return '复用上次步骤，未调用模型';
+  if (t.routeReason === 'adapter_mismatch') return `上次步骤对不上，转模型，模型调用 ${calls} 次`;
+  if (['hint_record', 'record_not_matched'].includes(t.routeReason))
+    return `参考上次步骤，模型调用 ${calls} 次`;
+  if (t.routeReason === 'user_correction') return `按修正意见重新分析，模型调用 ${calls} 次`;
+  return `新页面，模型分析 ${calls} 次`;
+}
+
 function TaskCard({ task: t, conversationId, onAction, busy }) {
   const [image, setImage] = useState(null);
   const screenshots = t.artifacts || [];
@@ -671,11 +683,6 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
           </a>
         </div>
       ) : null}
-      {t.status === 'awaiting_review' && t.tickedAgreements?.length ? (
-        <p className="agreement-note">
-          已代您勾选「{t.tickedAgreements.join('」「')}」，尚未提交。
-        </p>
-      ) : null}
       {t.status === 'awaiting_review' && t.pendingAgreements?.length ? (
         <p className="agreement-note">
           截图中「{t.pendingAgreements.join('」「')}
@@ -719,10 +726,7 @@ function TaskCard({ task: t, conversationId, onAction, busy }) {
         {t.events?.map((event, i) => (
           <p key={i}>{event.message}</p>
         ))}
-        <p>
-          {t.executionSource === 'agent' ? 'Harness 分析' : '规则处理'} · 执行模型调用{' '}
-          {t.modelCalls || 0} 次
-        </p>
+        {t.executionSource ? <p>{fillSource(t)}</p> : null}
       </details>
       {t.actualSubmitted === true ? (
         <small className="submission-fact submitted">已真实提交到开票平台。</small>

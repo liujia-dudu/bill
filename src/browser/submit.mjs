@@ -83,6 +83,11 @@ async function scanAll(page, attribute) {
 // for images or scripts do not count as submitting.
 const submissionSent = (released) =>
   released.some((r) => !['GET', 'HEAD', 'OPTIONS'].includes(r.method) || r.type === 'document');
+const errorLines = (text) =>
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && line.length <= 80 && ERROR.test(line));
 const flat = (frames, key) => frames.flatMap((frame) => frame[key]);
 const buttonsOf = (frames) =>
   frames.flatMap((frame) => frame.buttons.map((button) => ({ ...button, frame: frame.frame })));
@@ -112,6 +117,8 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
   const knownFields = new Set(flat(before, 'fields'));
   const knownDialogs = new Set(flat(before, 'dialogs'));
   const successBefore = SUCCESS.test(flat(before, 'body').join('\n'));
+  // Only error text that appears after our click counts as the page rejecting it.
+  const errorsBefore = new Set(errorLines(flat(before, 'body').join('\n')));
   let stop = null;
   const onDialog = async (dialog) => {
     const message = dialog.message().slice(0, 300);
@@ -177,10 +184,7 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
       (!successBefore && SUCCESS.test(text)) ||
       ['already_issued', 'already_submitted'].includes(classified?.status);
     const sent = submissionSent(guard.released);
-    const hint = text
-      .split('\n')
-      .map((line) => line.trim())
-      .find((line) => line.length <= 80 && ERROR.test(line));
+    const rejected = errorLines(text).find((line) => !errorsBefore.has(line));
     result = stop
       ? {
           status: 'needs_user_input',
@@ -191,26 +195,30 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
         }
       : succeeded
         ? { status: 'submitted', message: '已提交，页面显示提交成功', actualSubmitted: true }
-        : sent
+        : rejected
           ? {
-              status: 'submitted_unverified',
-              message: `提交请求已发出，但页面未显示明确的成功结果${hint ? `（页面提示：${hint}）` : ''}；请勿重复提交，请自行核对`,
-              actualSubmitted: true,
-            }
-          : {
+              // The page said no, so the link was not used up and can be redone.
               status: 'submit_failed',
-              reasonCode: 'no_submit_request',
-              message: `点击提交后页面没有发出提交请求${hint ? `（页面提示：${hint}）` : ''}，未提交`,
+              reasonCode: 'page_rejected',
+              message: `提交失败，页面提示：${rejected}。发票没有开成，回复“重来”可修改后重新填写`,
               actualSubmitted: false,
-            };
+              pageError: rejected,
+            }
+          : sent
+            ? // Many pages close or show nothing after submitting; no error means submitted.
+              { status: 'submitted_unverified', message: '已提交', actualSubmitted: true }
+            : {
+                status: 'submit_failed',
+                reasonCode: 'no_submit_request',
+                message: '点击提交后页面没有反应，未提交，回复“重来”可重新填写',
+                actualSubmitted: false,
+              };
   } catch (error) {
     const sent = submissionSent(guard.released);
     result = {
       status: sent ? 'submitted_unverified' : 'submit_failed',
       reasonCode: error.code || 'submit_error',
-      message: sent
-        ? `提交过程中出错（${safeMessage(error)}），但提交请求已发出；请勿重复提交，请自行核对`
-        : `提交前出错：${safeMessage(error)}，未提交`,
+      message: sent ? '已提交' : `提交前出错：${safeMessage(error)}，未提交，回复“重来”可重新填写`,
       actualSubmitted: sent,
     };
   } finally {

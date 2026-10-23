@@ -31,7 +31,7 @@ npm start
 
 填写完成后截图发回对话，5 分钟内回复：
 
-- **确认提交**：程序在同一页面提交一次。页面有“我已阅读并同意《…协议》”时，截图前会代为勾选（不提交），卡片中注明。
+- **确认提交**：程序在同一页面提交一次。页面有“我已阅读并同意《…协议》”时，截图前会代为勾选（不提交），勾选状态见截图。
 - **指出问题**：整页重填并重新截图；只说“不对”会先追问是哪一项。
 - **放弃**：直接关闭页面。
 
@@ -44,7 +44,7 @@ npm start
 ## 设计文档
 
 - [对话架构](docs/CONVERSATIONAL_AGENT_DESIGN.md)：对话、记忆、任务与审核。
-- [域名规则架构](docs/DYNAMIC_RULES.md)：`src/adapters/<域名>/` 规则的结构、审核与安全限制。当前正式规则为空，真实页面全部由模型分析。
+- [填写记录架构](docs/DYNAMIC_RULES.md)：同一页面按用户回复自动学习填写步骤（可信回放 / 提示参考 / 修正作废）及 light 不兼容记忆。
 
 ## 目录
 
@@ -54,8 +54,7 @@ src/
   server/              对话 API、附件、事件推送、配置和启动
   core/                对话服务、附件与二维码解码、任务执行与审核
   agent/               Harness 运行时、主对话能力定义、浏览器填写工具
-  rules/               域名规则加载、校验、执行和候选导出
-  adapters/<域名>/     正式 flow/policy JSON（当前为空）
+  rules/               填写记录的读写、校验、回放和步骤导出
   browser/             浏览器连接、页面观察、提交拦截与确认后提交
   storage/             SQLite 存储与迁移
 tests/                 自动化测试与合成样本
@@ -65,7 +64,7 @@ data/
   uploads/             附件原件
   artifacts/<taskId>/  截图、字段回读、浏览器轨迹、提交证据
   harness/             Harness 会话与调用记录
-  adapters/candidates/ 待审核规则草稿
+  rules/<域名>/        自动学习的填写记录（按路径）
 ```
 
 `data/` 是本机普通文件，备份前先停止服务。只读接口 `/api/profiles`、`/api/tasks` 仅用于本机诊断，产品写操作都通过对话完成。
@@ -82,7 +81,6 @@ data/
 ```powershell
 npm test
 npm run test:e2e
-npm run check:adapters
 python -m unittest discover -s tests -p test_decode_qr.py -v
 ```
 
@@ -101,7 +99,7 @@ node tests/chat-qr-live.mjs
 
 - 真实商家页面从未执行过真实提交；能否识别真实平台的成功页面待首单验证。
 - 真实填写只在 t2 与 pos.mzdpgroup.com 用 normal 跑通（未提交）；light 及“light 失败转 normal”仅在合成页面验证。
-- 正式规则为空，尚无真实商家零模型回放。
+- 填写记录的可信回放与提示参考、light 不兼容记忆只在合成页面验证，尚未在真实商家页面验证提速效果。
 - 跨站验证码、人工远程接管未实现；遇到验证码、候选有歧义或税号冲突时停止并说明。
 - 页面税号查询加格式检查不等于工商权威认证。
 - 浏览器任务串行执行，最多排队 20 个；本地单用户版本，无多账号与公网服务。

@@ -27,6 +27,9 @@ export async function runHarness({
   sessionKey = null,
   onText = () => {},
   allowImages = false,
+  // Ends the run right after a tool result that completes the work, skipping the
+  // model's closing summary that nothing reads.
+  stopAfter = () => false,
 }) {
   const runtimeDir = path.join(dataDir, 'harness', sessionKey || taskId);
   const auditDir = sessionKey ? path.join(runtimeDir, 'turns', taskId) : runtimeDir;
@@ -37,6 +40,7 @@ export async function runHarness({
     toolCalls = 0,
     toolNames = [],
     active = true,
+    stoppedEarly = false,
     queue = Promise.resolve(),
     finalAudit;
   const server = createServer(async (req, res) => {
@@ -69,7 +73,13 @@ export async function runHarness({
       const run = queue.then(async () => {
         if (!active || signal?.aborted) throw new Error('Task cancelled');
         if (++toolCalls > 160) throw new Error('Tool budget reached');
-        return dispatch(name, args || {});
+        const output = await dispatch(name, args || {});
+        if (stopAfter(name, output)) {
+          stoppedEarly = true;
+          active = false;
+          setImmediate(() => void harness.close().catch(() => {}));
+        }
+        return output;
       });
       queue = run.catch(() => {});
       respond(200, await run);
@@ -162,9 +172,31 @@ export async function runHarness({
         }
       },
     };
-    const result = session
-      ? await session.run(prompt, runOptions)
-      : await harness.run(prompt, runOptions);
+    let result;
+    try {
+      result = session
+        ? await session.run(prompt, runOptions)
+        : await harness.run(prompt, runOptions);
+    } catch (error) {
+      if (!stoppedEarly || aborted) throw error;
+    }
+    if (stoppedEarly && !aborted) {
+      finalAudit = {
+        harnessVersion: HARNESS_VERSION,
+        model: config.model,
+        calls,
+        toolCalls,
+        toolNames,
+        sessionId: result?.sessionId || null,
+        closed: false,
+        stoppedAfterTool: true,
+        eventTypes: result?.events?.map((e) => e.type) || [],
+        modelSteps: [],
+        finalResponse: '',
+      };
+      await writeFile(path.join(auditDir, 'audit.json'), JSON.stringify(finalAudit, null, 2));
+      return finalAudit;
+    }
     if (aborted) throw new AppError('模型处理已取消或达到时间上限', 400, 'model_cancelled');
     const terminal = result.events.findLast((e) => e.type === 'turn/end');
     if (terminal?.data?.reason?.kind === 'error')

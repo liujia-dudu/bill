@@ -21,6 +21,7 @@ import {
   tickAgreements,
 } from '../browser/observe.mjs';
 import { RuleRegistry } from '../rules/registry.mjs';
+import { readPending } from '../rules/candidate.mjs';
 import { executeRule } from '../rules/executor.mjs';
 import { runInvoiceAgent } from '../agent/run-invoice.mjs';
 import { submitInvoice } from '../browser/submit.mjs';
@@ -50,7 +51,7 @@ export class Runner {
   constructor(store, config) {
     this.store = store;
     this.config = config;
-    this.rules = new RuleRegistry(config.rulesDir || path.join(config.root, 'src', 'adapters'));
+    this.rules = new RuleRegistry(config.rulesDir || path.join(config.dataDir, 'rules'));
     this.running = false;
     this.stopped = false;
     this.cancelled = new Set();
@@ -62,6 +63,7 @@ export class Runner {
     this.live = new Map();
     this.closing = new Map();
     this.submitting = new Map();
+    this.learning = new Set();
     this.reviewWindowMs = config.reviewWindowMs || REVIEW_WINDOW_MS;
     this.taskListener = (task) => {
       if (this.live.has(task.id) && task.status !== 'awaiting_review') void this.release(task.id);
@@ -223,7 +225,8 @@ export class Runner {
       outcome,
       screenshotSaved = false;
     let actualEngine = task.engineRequested;
-    let fillFallback;
+    let fillFallback, lightVersion;
+    const entryHost = new URL(task.url).hostname;
     const check = () => {
       if (this.cancelled.has(task.id) || this.stopped)
         throw new AppError('任务已取消', 400, 'cancelled');
@@ -285,6 +288,16 @@ export class Runner {
         outcome = rule;
         return;
       }
+      const remembered = actualEngine === 'light' && this.lightIncompatible(entryHost);
+      if (remembered) {
+        actualEngine = 'normal';
+        this.store.patchTask(task.id, { engine: 'normal', engineMemory: remembered });
+        this.store.event(
+          task.id,
+          'engine_memory',
+          '该网站在当前 light 版本下不兼容，直接使用 normal',
+        );
+      }
       for (;;) {
         try {
           const prepared = await prepareInvoiceBrowser({
@@ -310,6 +323,13 @@ export class Runner {
               });
             },
             onUpdate: (patch) => {
+              const light = patch.engineAttempts?.find(
+                (attempt) => attempt.engine === 'light' && 'browserVersion' in attempt,
+              );
+              if (light) {
+                lightVersion = light.browserVersion;
+                this.store.write('settings', { id: 'light-version', value: lightVersion });
+              }
               this.store.patchTask(task.id, patch);
               if (patch.engineFallback?.result === 'checking')
                 this.store.event(task.id, 'engine_recheck', 'light 页面异常，正在使用 normal 复核');
@@ -361,15 +381,18 @@ export class Runner {
           const route = task.correctionNotes?.length
             ? { source: 'agent', reason: 'user_correction' }
             : await this.rules.select(before, task.profile, actualEngine);
+          let hint = route.hint;
           this.store.patchTask(task.id, {
             executionSource: route.source,
-            routeReason: route.reason || 'verified_contract',
+            routeReason: route.reason,
+            ...(route.learned ? { learnedFrom: route.learned } : {}),
           });
           if (route.source === 'adapter') {
+            this.store.event(task.id, 'rule', '按上次认可的步骤直接填写，不调用模型');
             try {
               result = await executeRule({
                 route,
-                registry: this.rules,
+                taskId: task.id,
                 page: handle.page,
                 profile: task.profile,
                 directory: dir,
@@ -391,8 +414,9 @@ export class Runner {
                 ].includes(error.code)
               )
                 throw error;
-              this.store.event(task.id, 'agent', '规则与当前页面不一致，交由 Harness 重新分析');
+              this.store.event(task.id, 'agent', '页面与上次记录不一致，交由 Harness 继续分析');
               preparationTools = error.preparationTools;
+              hint = route.variant.steps;
               this.store.patchTask(task.id, {
                 executionSource: 'agent',
                 routeReason: 'adapter_mismatch',
@@ -401,7 +425,13 @@ export class Runner {
           }
           if (!result) {
             this.agentAbort = new AbortController();
-            this.store.event(task.id, 'agent', 'Harness 正在分析页面并调用填写工具');
+            this.store.event(
+              task.id,
+              'agent',
+              hint
+                ? 'Harness 正在参考上次的填写步骤分析页面'
+                : 'Harness 正在分析页面并调用填写工具',
+            );
             result = await runInvoiceAgent({
               page: handle.page,
               profile: task.profile,
@@ -411,6 +441,7 @@ export class Runner {
               engine: actualEngine,
               browserTools: preparationTools,
               corrections: task.correctionNotes,
+              hint,
               check,
               signal: this.agentAbort.signal,
               onProgress: (message) => this.store.event(task.id, 'agent_tool', message),
@@ -434,16 +465,7 @@ export class Runner {
             coverageGaps: result.coverageGaps,
             transaction: result.transaction || this.store.require('tasks', task.id).transaction,
             parameterSignature: result.signature,
-            signatureComplete: result.signatureComplete === true,
             executionSource: result.executionSource || 'adapter',
-            ...(result.ruleRevision
-              ? {
-                  ruleDomain: result.ruleDomain,
-                  ruleId: result.ruleId,
-                  ruleVariant: result.ruleVariant,
-                  ruleRevision: result.ruleRevision,
-                }
-              : {}),
             ...(result.modelCalls
               ? {
                   modelCalls: result.modelCalls,
@@ -625,6 +647,17 @@ export class Runner {
         path.join(dir, 'network-guard.json'),
         JSON.stringify({ blocked, actualSubmitted: false }, null, 2),
       );
+      if (outcome?.status === 'awaiting_review' && lightVersion !== undefined)
+        this.rememberEngine(
+          entryHost,
+          lightVersion,
+          actualEngine,
+          task.id,
+          Boolean(
+            fillFallback ||
+            this.store.require('tasks', task.id).engineFallback?.compatibilitySuspected,
+          ),
+        );
       if (keep)
         this.live.set(task.id, {
           handle,
@@ -695,6 +728,63 @@ export class Runner {
     await writeFile(path.join(evidence, 'fallback.json'), JSON.stringify(record, null, 2));
     return record;
   }
+  // Light that failed on a site stays skipped there until light's browser version changes.
+  lightIncompatible(host) {
+    const memory = this.store.get('settings', `engine:${host}`);
+    if (!memory) return null;
+    const current = this.store.get('settings', 'light-version');
+    return current && current.value === memory.lightVersion
+      ? { lightVersion: memory.lightVersion, recordedAt: memory.recordedAt }
+      : null;
+  }
+  rememberEngine(host, lightVersion, engine, taskId, lightFailed) {
+    const id = `engine:${host}`;
+    if (engine === 'light') {
+      if (this.store.get('settings', id)) this.store.remove('settings', id);
+    } else if (lightFailed)
+      this.store.write('settings', {
+        id,
+        lightVersion,
+        taskId,
+        recordedAt: new Date().toISOString(),
+      });
+  }
+  // Turns the task's completed steps into a hint or trusted record. Learning never
+  // blocks or fails the user's decision.
+  learn(id, level) {
+    const run = this.learnSteps(id, level);
+    this.learning.add(run);
+    return run.finally(() => this.learning.delete(run));
+  }
+  async learnSteps(id, level) {
+    try {
+      const pending = await readPending(path.join(this.config.dataDir, 'artifacts', id));
+      if (!pending) return;
+      const revision = await this.rules.learn(pending, level);
+      if (revision && this.store.get('tasks', id))
+        this.store.patchTask(id, { learned: { level, revision } });
+    } catch (error) {
+      try {
+        if (this.store.get('tasks', id))
+          this.store.event(id, 'learn_failed', `填写步骤未能记录：${safeMessage(error)}`);
+      } catch {
+        // The store may already be closed during shutdown.
+      }
+    }
+  }
+  // A correction drops the record this task replayed or was hinted by, and any record
+  // learned from this task, for its buyer type only.
+  async forget(id) {
+    const task = this.store.require('tasks', id);
+    const pending = await readPending(path.join(this.config.dataDir, 'artifacts', id)).catch(
+      () => null,
+    );
+    const targets = [];
+    if (task.learnedFrom) targets.push([task.learnedFrom, task.learnedFrom.revision]);
+    if (pending && task.learned) targets.push([pending, task.learned.revision]);
+    for (const [{ key, buyerType }, revision] of targets)
+      await this.rules.discard(key, buyerType, [revision]);
+  }
   release(id) {
     const live = this.live.get(id);
     if (!live) return this.closing.get(id);
@@ -720,6 +810,7 @@ export class Runner {
   expire(id) {
     const task = this.store.get('tasks', id);
     if (task?.status !== 'awaiting_review') return this.release(id);
+    void this.learn(id, 'hint');
     this.store.patchTask(id, {
       status: 'review_expired',
       phase: 'finished',
@@ -825,6 +916,14 @@ export class Runner {
           ]
         : task.artifacts,
     });
+    // The user approved the screenshot; only a page that rejected it or stopped on
+    // something new leaves the steps as a hint.
+    await this.learn(
+      id,
+      result.reasonCode === 'page_rejected' || result.status === 'needs_user_input'
+        ? 'hint'
+        : 'trusted',
+    );
     this.notify(done, result.message);
     return done;
   }
@@ -833,12 +932,25 @@ export class Runner {
     if (task.status === 'review_expired') return task;
     if (task.status !== 'awaiting_review')
       throw new AppError('这张任务当前不在待确认状态', 409, 'review_inactive');
+    void this.learn(id, 'hint');
     return this.store.patchTask(id, {
       status: 'abandoned',
       phase: 'finished',
       reviewStatus: 'abandoned',
       reviewToken: null,
       message,
+    });
+  }
+  // "Filled correctly, but don't submit": the page closes and the steps become trusted.
+  approve(id) {
+    this.requireReview(id);
+    void this.learn(id, 'trusted');
+    return this.store.patchTask(id, {
+      status: 'approved_unsubmitted',
+      phase: 'finished',
+      reviewStatus: 'approved_unsubmitted',
+      reviewToken: null,
+      message: '已确认填写正确，未提交，页面已关闭',
     });
   }
   supersede(id, newTaskId) {
@@ -868,5 +980,6 @@ export class Runner {
     await Promise.allSettled([...this.submitting.values()]);
     await Promise.allSettled([...this.live.keys()].map((id) => this.release(id)));
     await Promise.allSettled([...this.closing.values()]);
+    await Promise.allSettled([...this.learning]);
   }
 }

@@ -1,12 +1,11 @@
 // Test-only browser/provider setup; production does not import fixture code.
 import { chromium } from 'playwright';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import dns from 'node:dns/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { RuleRegistry } from '../../src/rules/registry.mjs';
-import { buildCandidate } from '../../src/rules/candidate.mjs';
-import { flowDigest } from '../../src/rules/schema.mjs';
+import { buildPending } from '../../src/rules/candidate.mjs';
 import { InvoiceBrowserTools } from '../../src/agent/browser-tools.mjs';
 import { installGuard } from '../../src/browser/guard.mjs';
 import { SYNTHETIC_PROFILE } from './profile.mjs';
@@ -106,36 +105,18 @@ export async function writeSyntheticRule(directory, profile) {
       await tools.dispatch('invoice_fill', { elementRef: control.elementRef, valueRef });
     }
     await tools.dispatch('invoice_finish', {});
-    const candidate = buildCandidate({
+    const pending = buildPending({
       tools,
       taskId: 'synthetic',
       initialUrl: SYNTHETIC_URL,
       initialProfile: profile,
-      // Rules match by engine; record under the default engine new tasks use.
+      // Records match by engine; record under the default engine new tasks use.
       engine: 'light',
     });
-    if (!candidate) throw new Error('Synthetic rule could not be built');
-    const rulesDir = path.join(directory, 'rules');
-    const site = path.join(rulesDir, 'example.invalid');
-    await mkdir(site, { recursive: true });
-    await writeFile(path.join(site, 'flow.json'), JSON.stringify(candidate.flow));
-    await writeFile(
-      path.join(site, 'policy.json'),
-      JSON.stringify({
-        ...candidate.policy,
-        preparationReviews: [
-          {
-            variantId: 'default',
-            flowDigest: flowDigest(candidate.flow),
-            reviewedAt: new Date().toISOString(),
-            signatureComplete: true,
-            protocolReviewed: true,
-            agreementVerified: true,
-          },
-        ],
-      }),
-    );
-    return new RuleRegistry(rulesDir);
+    if (!pending) throw new Error('Synthetic record could not be built');
+    const registry = new RuleRegistry(path.join(directory, 'rules'));
+    await registry.learn(pending, 'trusted');
+    return registry;
   } finally {
     await handle.close();
   }

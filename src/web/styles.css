@@ -511,12 +511,12 @@ p {
   background: #fbf5e7;
   color: #ab955d;
 }
-.task-status.submitting,
-.task-status.submitted_unverified {
+.task-status.submitting {
   background: #fbf5e7;
   color: #ab955d;
 }
-.task-status.submitted {
+.task-status.submitted,
+.task-status.submitted_unverified {
   background: #e6f2e0;
   color: #5f8a4c;
 }

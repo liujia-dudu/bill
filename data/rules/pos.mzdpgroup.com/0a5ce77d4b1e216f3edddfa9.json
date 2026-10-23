@@ -91,6 +91,78 @@
       "level": "trusted",
       "learnedAt": "2026-10-23T08:19:03.645Z",
       "revision": "9c578586b63068f7847e1e1e30dc94867fb69bc41471ec61f7d176d4302b70b5"
+    },
+    "personal": {
+      "engine": "normal",
+      "profileFields": [
+        "email",
+        "title"
+      ],
+      "steps": [
+        {
+          "action": "select",
+          "contract": "8a54acca40be705e26fe571f9447dfd0715eabf2d3466d7bd98bdc44a3c4e0a7",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "button",
+              "type": "submit",
+              "role": "",
+              "label": "抬头类型",
+              "context": "",
+              "placeholder": "",
+              "name": "",
+              "stableId": ""
+            },
+            "text": "个人"
+          },
+          "option": "个人"
+        },
+        {
+          "action": "fill",
+          "contract": "aaeb711c611dac66880f050a43adc3c7689a08942a76b2f11d580f2492849b62",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "抬头名称",
+              "context": "",
+              "placeholder": "请输入发票抬头",
+              "name": "",
+              "stableId": ""
+            }
+          },
+          "valueRef": "title"
+        },
+        {
+          "action": "fill",
+          "contract": "aaeb711c611dac66880f050a43adc3c7689a08942a76b2f11d580f2492849b62",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "邮箱地址",
+              "context": "",
+              "placeholder": "请输入接收电子发票的邮箱",
+              "name": "",
+              "stableId": ""
+            }
+          },
+          "valueRef": "email"
+        },
+        {
+          "action": "finish",
+          "contract": "aaeb711c611dac66880f050a43adc3c7689a08942a76b2f11d580f2492849b62"
+        }
+      ],
+      "sourceTaskId": "3a33f32d-eb59-48f4-a764-a1afa56da61c",
+      "level": "trusted",
+      "learnedAt": "2026-10-23T08:23:19.216Z",
+      "revision": "9f42d123ff66d9d88c97c332518af92779d80629abb37b2998ff1c0d5c7f22cf"
     }
   }
 }

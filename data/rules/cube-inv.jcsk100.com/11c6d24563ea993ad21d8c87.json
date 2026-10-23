@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 2,
+  "host": "cube-inv.jcsk100.com",
+  "path": "/h5/",
+  "hashPath": "#/qrCodeBilling",
+  "variants": {
+    "enterprise": {
+      "engine": "normal",
+      "profileFields": [
+        "email",
+        "taxId",
+        "title"
+      ],
+      "steps": [
+        {
+          "action": "fill",
+          "contract": "412fbb0e0852e2fdb8ce1a8f6c979483f053f7e3ac6fd0156c5786c8504850e4",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "combobox",
+              "label": "*公司名称",
+              "context": "",
+              "placeholder": "",
+              "name": "",
+              "stableId": ""
+            }
+          },
+          "valueRef": "title"
+        },
+        {
+          "action": "choose_company",
+          "contract": "412fbb0e0852e2fdb8ce1a8f6c979483f053f7e3ac6fd0156c5786c8504850e4",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "li",
+              "type": "",
+              "role": "option",
+              "label": "",
+              "context": "",
+              "placeholder": "",
+              "name": "",
+              "stableId": ""
+            }
+          }
+        },
+        {
+          "action": "read_tax",
+          "contract": "412fbb0e0852e2fdb8ce1a8f6c979483f053f7e3ac6fd0156c5786c8504850e4",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "公司税号",
+              "context": "",
+              "placeholder": "请输入",
+              "name": "",
+              "stableId": ""
+            }
+          }
+        },
+        {
+          "action": "fill",
+          "contract": "412fbb0e0852e2fdb8ce1a8f6c979483f053f7e3ac6fd0156c5786c8504850e4",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "*收票邮箱",
+              "context": "",
+              "placeholder": "请输入收票邮箱",
+              "name": "",
+              "stableId": ""
+            }
+          },
+          "valueRef": "email"
+        },
+        {
+          "action": "finish",
+          "contract": "412fbb0e0852e2fdb8ce1a8f6c979483f053f7e3ac6fd0156c5786c8504850e4"
+        }
+      ],
+      "sourceTaskId": "0daca234-4b9d-4b75-bfe3-5d1291c78200",
+      "level": "trusted",
+      "learnedAt": "2026-10-23T04:29:59.305Z",
+      "revision": "5a392d75d091eab32915d4f41f03d3a56c4755be5ab0b4cc983553346ccdd79d"
+    }
+  }
+}

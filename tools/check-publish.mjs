@@ -20,6 +20,8 @@ const secretPatterns = [
 export function privatePath(filename) {
   const name = filename.replaceAll('\\', '/');
   const base = path.posix.basename(name);
+  // Learned fill records hold profile references, not values; content is still scanned.
+  if (/^data\/rules\/[a-z0-9.-]+\/[a-f0-9]{24}\.json$/.test(name)) return false;
   return (
     /^(?:data|diagnostics|test-results|dist|coverage)\//i.test(name) ||
     /(?:^|\/)(?:node_modules|__pycache__|\.venv|venv|\.git)\//i.test(name) ||

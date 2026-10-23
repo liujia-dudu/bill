@@ -64,10 +64,10 @@ data/
   uploads/             附件原件
   artifacts/<taskId>/  截图、字段回读、浏览器轨迹、提交证据
   harness/             Harness 会话与调用记录
-  rules/<域名>/        自动学习的填写记录（按路径）
+  rules/<域名>/        自动学习的填写记录（按路径，已脱敏，随仓库上传）
 ```
 
-`data/` 是本机普通文件，备份前先停止服务。只读接口 `/api/profiles`、`/api/tasks` 仅用于本机诊断，产品写操作都通过对话完成。
+`data/` 是本机普通文件，备份前先停止服务；其中只有 `data/rules/` 进入版本控制。只读接口 `/api/profiles`、`/api/tasks` 仅用于本机诊断，产品写操作都通过对话完成。
 
 `tools/cleanup.mjs` 在 `npm test`、`npm start`、`npm run dev` 前自动运行（`npm run cleanup -- --dry-run` 只列出不删除）：
 

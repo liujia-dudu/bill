@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 2,
+  "host": "pos.mzdpgroup.com",
+  "path": "/mobile/inv/index.html",
+  "hashPath": "",
+  "variants": {
+    "enterprise": {
+      "engine": "normal",
+      "profileFields": [
+        "email",
+        "taxId",
+        "title"
+      ],
+      "steps": [
+        {
+          "action": "fill",
+          "contract": "d4ff7de6788f70b2696bcf268e02c027b74395507bb77ff5d3c94bb3ece7d073",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "抬头名称",
+              "context": "",
+              "placeholder": "请输入发票抬头",
+              "name": "",
+              "stableId": ""
+            }
+          },
+          "valueRef": "title"
+        },
+        {
+          "action": "choose_company",
+          "contract": "d4ff7de6788f70b2696bcf268e02c027b74395507bb77ff5d3c94bb3ece7d073",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "div",
+              "type": "",
+              "role": "",
+              "label": "",
+              "context": "",
+              "placeholder": "",
+              "name": "",
+              "stableId": ""
+            }
+          }
+        },
+        {
+          "action": "read_tax",
+          "contract": "d4ff7de6788f70b2696bcf268e02c027b74395507bb77ff5d3c94bb3ece7d073",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "企业税号",
+              "context": "",
+              "placeholder": "请输入纳税人识别号",
+              "name": "",
+              "stableId": ""
+            }
+          }
+        },
+        {
+          "action": "fill",
+          "contract": "d4ff7de6788f70b2696bcf268e02c027b74395507bb77ff5d3c94bb3ece7d073",
+          "target": {
+            "frameIndex": 0,
+            "identity": {
+              "tag": "input",
+              "type": "text",
+              "role": "",
+              "label": "邮箱地址",
+              "context": "",
+              "placeholder": "请输入接收电子发票的邮箱",
+              "name": "",
+              "stableId": ""
+            }
+          },
+          "valueRef": "email"
+        },
+        {
+          "action": "finish",
+          "contract": "d4ff7de6788f70b2696bcf268e02c027b74395507bb77ff5d3c94bb3ece7d073"
+        }
+      ],
+      "sourceTaskId": "629352c9-7dcb-449c-8694-54ead05753e4",
+      "level": "trusted",
+      "learnedAt": "2026-10-23T04:36:36.783Z",
+      "revision": "955f68cb4409c8a528745b63bf9ffa554dddcb54d295907de405fa0daf01f1d3"
+    }
+  }
+}

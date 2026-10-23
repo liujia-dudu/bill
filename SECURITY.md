@@ -10,7 +10,8 @@ Keep API keys and account-specific endpoints in the local `.env`. Only the empty
 `.env.example` is published. Do not publish provider API-key CSV exports, credential
 files, databases, QR originals, invoice URLs, screenshots, browser traces, uploads,
 model session histories, or diagnostic logs. `data/`, `test-results/` and
-`diagnostics/` are local-only directories. A custom data directory must also be
+`diagnostics/` are local-only directories, except `data/rules/`: learned fill
+records hold profile references instead of values and are published for reuse. A custom data directory must also be
 excluded before committing.
 
 The publication check scans the exact Git index, blocks known private paths and

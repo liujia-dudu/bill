@@ -10,6 +10,8 @@ test('publication check blocks private inputs and nested credential exports', ()
     'exports/provider-apiKey-123.csv',
     'exports/provider-API_KEY.CSV',
     'data/invoice.sqlite',
+    'data/rules/invoice.example.com/notes.txt',
+    'data/artifacts/task/learned-steps.json',
     'diagnostics/report.json',
     'test-results/screenshot.png',
     'docs/INVOICE_URLS.md',
@@ -23,6 +25,7 @@ test('publication check blocks private inputs and nested credential exports', ()
     '.env.example',
     'src/agent/model-config.mjs',
     'tests/fixtures/qr/demo.png',
+    'data/rules/invoice.example.com/0a5ce77d4b1e216f3edddfa9.json',
   ])
     assert.equal(privatePath(filename), false, filename);
 });

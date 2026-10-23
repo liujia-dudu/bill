@@ -17,7 +17,9 @@ service-account*.json
 *.pfx
 
 # Private invoice inputs, records, browser evidence and generated output.
-/data/
+# Learned fill records are redacted and shared on purpose.
+/data/*
+!/data/rules/
 /diagnostics/
 /test-results/
 /dist/

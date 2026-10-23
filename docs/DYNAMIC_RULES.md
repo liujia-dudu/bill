@@ -105,7 +105,31 @@ data/artifacts/<taskId>/rule-snapshot.json
 - 以后该域名的任务，只要当前 light 版本与记录相同就直接用 normal；任意任务看到新版本后，该域名会再试一次 light，成功进入截图确认即删除记录。
 - 记录在本机数据库 settings 中，不过期，用户无需操作。
 
-## 6. 边界与验证
+## 6. 需客户端办理的入口
+
+- 页面明确要求微信/客户端（`client_required`），或主页面跳转到微信授权（`wechat_oauth_required`）时，按**入口网址**（跳转前）的 host + path 在同一记录文件里写 `entry`，订单参数不参与。
+- 同一入口的新码直接回复需用微信或对应 App 办理，不开浏览器；用户回复“重来”时重新打开真实页面，能走到填写就删除 `entry`。
+- 404、空白、网络错误不记录：它们说明不了链接只能在客户端打开，可能只是链接失效。
+- 不在代码里按网址写站点规则；kiwa 小程序入口作为 `source: user_confirmed` 的数据保存在 `data/rules/www.kiwa-tech.com/`。
+
+```json
+{
+  "schemaVersion": 2,
+  "host": "www.kiwa-tech.com",
+  "path": "/scanIOrderIpadfromhdl",
+  "hashPath": "",
+  "variants": {},
+  "entry": {
+    "status": "unsupported_browser",
+    "reasonCode": "known_client_entry",
+    "message": "小程序码，需在微信中打开",
+    "source": "user_confirmed",
+    "learnedAt": "2026-10-15T00:00:00.000Z"
+  }
+}
+```
+
+## 7. 边界与验证
 
 - 回放和模型填写都不能点提交、勾协议或按回车；提交只在用户确认截图后由程序执行一次，同一入口链接只允许一次真实提交。
 - 内网访问限制、操作拦截和订单关联仍由 `browser/guard.mjs`、`browser/observe.mjs` 负责，记录不能放宽。

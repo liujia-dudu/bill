@@ -22,6 +22,7 @@ import {
 } from '../browser/observe.mjs';
 import { RuleRegistry } from '../rules/registry.mjs';
 import { readPending } from '../rules/candidate.mjs';
+import { CLIENT_ONLY_REASONS } from '../rules/schema.mjs';
 import { executeRule } from '../rules/executor.mjs';
 import { runInvoiceAgent } from '../agent/run-invoice.mjs';
 import { submitInvoice } from '../browser/submit.mjs';
@@ -153,6 +154,7 @@ export class Runner {
         engineRequested: engine,
         title: new URL(rawUrl).hostname,
         coverageGaps: ['提交需用户在对话中确认截图后执行'],
+        ...(body.recheckEntry === true ? { recheckEntry: true } : {}),
         ...(correctionNotes.length
           ? { correctionNotes, correctedFrom: body.correctedFrom || null }
           : {}),
@@ -225,7 +227,7 @@ export class Runner {
       outcome,
       screenshotSaved = false;
     let actualEngine = task.engineRequested;
-    let fillFallback, lightVersion;
+    let fillFallback, lightVersion, browsed, pageUsable;
     const entryHost = new URL(task.url).hostname;
     const check = () => {
       if (this.cancelled.has(task.id) || this.stopped)
@@ -288,6 +290,18 @@ export class Runner {
         outcome = rule;
         return;
       }
+      // "重来" rechecks the real page instead of trusting the remembered entry.
+      const known = !task.recheckEntry && (await this.rules.entry(task.url));
+      if (known) {
+        outcome = {
+          status: known.status,
+          reasonCode: known.reasonCode,
+          message:
+            '这个入口此前已确认需要在微信或对应 App 中办理，浏览器无法打开，请用微信扫码开具；回复“重来”可重新检查',
+          entryMemory: { source: known.source, learnedAt: known.learnedAt },
+        };
+        return;
+      }
       const remembered = actualEngine === 'light' && this.lightIncompatible(entryHost);
       if (remembered) {
         actualEngine = 'normal';
@@ -336,6 +350,7 @@ export class Runner {
             },
           });
           handle = prepared.handle;
+          browsed = true;
           orderRead = prepared.orderRead;
           initialObservation = prepared.observation;
           initialState = prepared.state;
@@ -357,6 +372,7 @@ export class Runner {
             await screenshot();
             return;
           }
+          pageUsable = true;
           this.store.patchTask(task.id, {
             finalHost: new URL(handle.page.url()).hostname,
           });
@@ -647,6 +663,7 @@ export class Runner {
         path.join(dir, 'network-guard.json'),
         JSON.stringify({ blocked, actualSubmitted: false }, null, 2),
       );
+      await this.rememberEntry(task, outcome, browsed, pageUsable);
       if (outcome?.status === 'awaiting_review' && lightVersion !== undefined)
         this.rememberEngine(
           entryHost,
@@ -727,6 +744,21 @@ export class Runner {
     }
     await writeFile(path.join(evidence, 'fallback.json'), JSON.stringify(record, null, 2));
     return record;
+  }
+  // A page that said it needs WeChat or an app is remembered for its entry path; 404s
+  // are not, since nothing shows the link is client-only rather than just broken.
+  async rememberEntry(task, outcome, browsed, pageUsable) {
+    try {
+      if (
+        browsed &&
+        outcome?.status === 'unsupported_browser' &&
+        CLIENT_ONLY_REASONS.includes(outcome.reasonCode)
+      )
+        await this.rules.rememberEntry(task.url, outcome, task.id);
+      else if (pageUsable && task.recheckEntry) await this.rules.forgetEntry(task.url);
+    } catch {
+      // A record that cannot be written only costs speed next time.
+    }
   }
   // Light that failed on a site stays skipped there until light's browser version changes.
   lightIncompatible(host) {

@@ -79,7 +79,7 @@ export class RuleRegistry {
       record ||= { schemaVersion: RULE_SCHEMA_VERSION, ...key, variants: {} };
       const result = change(record);
       const file = this.file(key);
-      if (!Object.keys(record.variants).length) await rm(file, { force: true });
+      if (!Object.keys(record.variants).length && !record.entry) await rm(file, { force: true });
       else {
         validateRecord(record, key);
         await mkdir(path.dirname(file), { recursive: true });
@@ -103,6 +103,32 @@ export class RuleRegistry {
       next.revision = digest(next);
       record.variants[buyerType] = next;
       return next.revision;
+    });
+  }
+  // Entries that a browser cannot handle (WeChat/app only), keyed by the entry URL's
+  // host + path so the next QR code for it is answered without opening a browser.
+  async entry(url) {
+    try {
+      return (await this.read(recordKey(url)))?.entry || null;
+    } catch {
+      return null;
+    }
+  }
+  rememberEntry(url, outcome, taskId) {
+    return this.update(recordKey(url), (record) => {
+      record.entry = {
+        status: outcome.status,
+        reasonCode: outcome.reasonCode,
+        message: outcome.message,
+        source: 'page',
+        sourceTaskId: taskId,
+        learnedAt: new Date().toISOString(),
+      };
+    });
+  }
+  forgetEntry(url) {
+    return this.update(recordKey(url), (record) => {
+      delete record.entry;
     });
   }
   // Only the record this task used or produced is dropped; a newer one from another

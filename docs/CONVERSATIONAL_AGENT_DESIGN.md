@@ -88,13 +88,13 @@
 
 二维码用本地 zxing-cpp 解码，失败再做有界的定位/透视/固定图案修复；多码让用户选择。入口只允许网页协议，拒绝本机、内网、文件及客户端协议。
 
-| 规则/页面事实                                                           | status / reasonCode                                     |
-| ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| kiwa-tech.com（含 www），路径以 /scanIOrder 开始                        | unsupported_browser / known_client_entry（t1 用户确认） |
-| 主 frame 实际导航到 https://open.weixin.qq.com/connect/oauth2/authorize | unsupported_browser / wechat_oauth_required             |
-| 页面明确要求客户端                                                      | unsupported_browser / client_required                   |
-| 当前已有申请/已开票                                                     | already_submitted / already_issued                      |
-| 失效、404、空白、网络或渲染失败                                         | failed / expired、page_error、blank_page 等             |
+| 规则/页面事实                                                             | status / reasonCode                         |
+| ------------------------------------------------------------------------- | ------------------------------------------- |
+| 入口 host + path 已记住需客户端办理（`data/rules/` 的 entry，不开浏览器） | unsupported_browser / 记住时的 reasonCode   |
+| 主 frame 实际导航到 https://open.weixin.qq.com/connect/oauth2/authorize   | unsupported_browser / wechat_oauth_required |
+| 页面明确要求客户端                                                        | unsupported_browser / client_required       |
+| 当前已有申请/已开票                                                       | already_submitted / already_issued          |
+| 失效、404、空白、网络或渲染失败                                           | failed / expired、page_error、blank_page 等 |
 
 微信规则只匹配 HTTPS、默认端口、精确主机及路径，不匹配子 frame、文本链接、近似域名或 /connect/qrconnect；不依赖 Oops 等错误文案。授权后回到可用表单则按当前状态继续。
 

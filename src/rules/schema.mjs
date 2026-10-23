@@ -117,9 +117,28 @@ export function validateVariant(variant) {
   return variant;
 }
 
+// Results that only a WeChat/app client can get past; stable for an entry path.
+export const CLIENT_ONLY_REASONS = [
+  'client_required',
+  'wechat_oauth_required',
+  'known_client_entry',
+];
+function validateEntry(entry) {
+  if (
+    !keys(entry, ['status', 'reasonCode', 'message', 'source', 'sourceTaskId', 'learnedAt']) ||
+    entry.status !== 'unsupported_browser' ||
+    !CLIENT_ONLY_REASONS.includes(entry.reasonCode) ||
+    !text(entry.message) ||
+    !['page', 'user_confirmed'].includes(entry.source) ||
+    !text(entry.learnedAt) ||
+    (entry.sourceTaskId !== undefined && !text(entry.sourceTaskId))
+  )
+    fail('入口记录只能记录需客户端办理的结论');
+}
+
 export function validateRecord(record, key) {
   if (
-    !keys(record, ['schemaVersion', 'host', 'path', 'hashPath', 'variants']) ||
+    !keys(record, ['schemaVersion', 'host', 'path', 'hashPath', 'variants', 'entry']) ||
     record.schemaVersion !== RULE_SCHEMA_VERSION ||
     record.host !== key.host ||
     record.path !== key.path ||
@@ -128,6 +147,7 @@ export function validateRecord(record, key) {
   )
     fail('记录必须与域名和路径一致');
   for (const variant of Object.values(record.variants)) validateVariant(variant);
+  if (record.entry !== undefined) validateEntry(record.entry);
   return record;
 }
 

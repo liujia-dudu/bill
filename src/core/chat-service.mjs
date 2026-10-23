@@ -698,6 +698,7 @@ export class ChatService {
             profileId: profile?.id,
             profileRevision: profile?.revision,
             profileSnapshot: profile?.id.startsWith('temporary-') ? profile : null,
+            recheckEntry: true,
           },
           actionId,
         );

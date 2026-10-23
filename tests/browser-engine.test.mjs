@@ -555,3 +555,57 @@ test('a site where light failed goes straight to normal until light changes vers
   runner.rememberEngine(host, 'light-2', 'light', result.id, false);
   assert.ok(!store.get('settings', `engine:${host}`));
 });
+
+test('a WeChat-only entry is remembered by path, 404s are not, and "重来" rechecks it', async (t) => {
+  const pages = { light: '<p>请使用微信客户端打开</p>', normal: '<p>请使用微信客户端打开</p>' };
+  const env = await fixture(pages);
+  const store = new Store(env.directory);
+  const runner = new Runner(store, { root: ROOT, dataDir: env.directory, openBrowser: env.open });
+  t.after(async () => {
+    await runner.close();
+    store.close();
+    await env.browser.close();
+  });
+  const profile = store.saveProfile(DEMO_PROFILE);
+  runner.rules.select = async () => {
+    throw new AppError('Synthetic routing stop', 400, 'synthetic_stop');
+  };
+  const run = async (entry, extra = {}) => {
+    env.order.length = 0;
+    const task = store.createTask(
+      {
+        source: 'input',
+        mode: 'dry_run',
+        engine: 'light',
+        engineRequested: 'light',
+        url: entry,
+        profile,
+        profileId: profile.id,
+        ...extra,
+      },
+      randomUUID(),
+    );
+    await runner.execute(task);
+    return store.require('tasks', task.id);
+  };
+  let result = await run(url);
+  assert.equal(result.reasonCode, 'client_required');
+  assert.equal((await runner.rules.entry(url)).reasonCode, 'client_required');
+  // Another order on the same entry path is answered without opening a browser.
+  result = await run(url.replace('synthetic', 'another'));
+  assert.deepEqual(env.order, []);
+  assert.equal(result.status, 'unsupported_browser');
+  assert.ok(result.entryMemory);
+  // The page now works: "重来" opens it for real and forgets the entry.
+  pages.light = form;
+  pages.normal = form;
+  result = await run(url, { recheckEntry: true });
+  assert.equal(env.order[0], 'open:light');
+  assert.equal(result.reasonCode, 'synthetic_stop');
+  assert.equal(await runner.rules.entry(url), null);
+  // A 404 cannot show the link is client-only, so it is never remembered.
+  pages.light = pages.normal = { status: 404, body: '<p>您访问的页面不存在！</p>' };
+  result = await run(url);
+  assert.equal(result.status, 'failed');
+  assert.equal(await runner.rules.entry(url), null);
+});

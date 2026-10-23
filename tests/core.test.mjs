@@ -70,7 +70,8 @@ test('precise entry rules and unsafe URL rejection', () => {
     entryRule('https://open.weixin.qq.com/connect/oauth2/authorize', { mainFrame: false }),
     null,
   );
-  assert.equal(entryRule('https://www.kiwa-tech.com/scanIOrder123').source, 'user_confirmed');
+  // Site-specific client entries are data in data/rules/, not code.
+  assert.equal(entryRule('https://www.kiwa-tech.com/scanIOrder123'), null);
   for (const url of [
     'file:///test',
     'http://127.0.0.1/',

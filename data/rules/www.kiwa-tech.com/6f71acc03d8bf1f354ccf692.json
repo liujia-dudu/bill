@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "host": "www.kiwa-tech.com",
+  "path": "/scanIOrderIpadfromhdl",
+  "hashPath": "",
+  "variants": {},
+  "entry": {
+    "status": "unsupported_browser",
+    "reasonCode": "known_client_entry",
+    "message": "小程序码，需在微信中打开",
+    "source": "user_confirmed",
+    "learnedAt": "2026-10-15T00:00:00.000Z"
+  }
+}

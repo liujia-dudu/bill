@@ -118,16 +118,6 @@ export function entryRule(raw, { mainFrame = true } = {}) {
     return null;
   }
   if (
-    ['kiwa-tech.com', 'www.kiwa-tech.com'].includes(url.hostname) &&
-    url.pathname.startsWith('/scanIOrder')
-  )
-    return {
-      status: 'unsupported_browser',
-      reasonCode: 'known_client_entry',
-      message: '此入口已标记为需要客户端打开（用户确认）',
-      source: 'user_confirmed',
-    };
-  if (
     mainFrame &&
     url.protocol === 'https:' &&
     !url.port &&

@@ -66,6 +66,32 @@
         } else if (mode === 'quiet') {
           // Sent, then nothing on the page changes.
           send();
+        } else if (mode === 'api') {
+          // Sent to the site's API subdomain, then nothing on the page changes.
+          fetch('https://api.example.invalid/submit-endpoint', { method: 'POST', body: '{}' });
+        } else if (mode === 'toast') {
+          // A failure toast that is gone before the page settles.
+          send().then(() => {
+            const toast = document.createElement('div');
+            toast.className = 'van-toast';
+            toast.textContent = '提交失败：税号格式不正确';
+            document.body.append(toast);
+            setTimeout(() => toast.remove(), 1500);
+          });
+          // Polling keeps the network busy until long after the toast is gone.
+          const busy = setInterval(() => fetch('/heartbeat'), 300);
+          setTimeout(() => clearInterval(busy), 4000);
+        } else if (mode === 'warn') {
+          // A second confirmation that warns with error-like wording.
+          const box = document.createElement('div');
+          box.className = 'van-dialog';
+          box.innerHTML =
+            '<p>开具后不可修改，抬头如有误请联系商家</p><button type="button">取消</button><button type="button">确定</button>';
+          box.querySelectorAll('button')[1].onclick = () => {
+            box.remove();
+            done();
+          };
+          document.body.append(box);
         } else if (mode === 'rejected') {
           send().then(() => {
             document.querySelector('#after').textContent = '提交失败：邮箱格式不正确';

@@ -133,6 +133,69 @@ test('shared profile memory and one-task overrides stay separate across conversa
     await e.close();
   }
 });
+test('an invoice uses current profiles: a stale profile id gives way to the default, and "这次" changes follow later edits', async () => {
+  const e = await environment();
+  try {
+    const c = e.store.createConversation();
+    const a = e.store.saveProfile({
+      type: 'enterprise',
+      title: '青禾合成科技有限公司',
+      email: 'a@example.invalid',
+      isDefault: true,
+    });
+    user(e.store, c.id, '用青禾合成科技有限公司开');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const b = e.store.saveProfile({
+      type: 'enterprise',
+      title: '远山贸易有限公司',
+      email: 'b@example.invalid',
+      isDefault: true,
+    });
+    const input = e.chat.attachments.fromUrl(c.id, 'https://example.com/invoice');
+    const observed = [];
+    e.chat.runner = {
+      cancel: () => {},
+      create: async (body) => {
+        observed.push(body);
+        return e.store.createTask(
+          { ...body, title: 'local', profile: body.profileSnapshot },
+          randomUUID(),
+        );
+      },
+    };
+    const start = (text, extra = {}) =>
+      e.chat.dispatch(c.id, user(e.store, c.id, text), 'invoice_start', {
+        inputId: input.id,
+        sourceQuote: text,
+        ...extra,
+      });
+    // The model picks A's id from older history; since the default became B the user
+    // has not named A, so B is used.
+    const stale = await start('帮我开票', { profileId: a.id });
+    assert.equal(observed.at(-1).profileId, b.id);
+    assert.match(stale.profileNote, /远山贸易有限公司/);
+    // Naming A now still uses A.
+    await start('这张用青禾那家开票', { profileId: a.id });
+    assert.equal(observed.at(-1).profileId, a.id);
+    // "这次邮箱用…" keeps only the email; a later edit of A still reaches this invoice.
+    const once = '这次用青禾，邮箱用 once@example.invalid';
+    await e.chat.dispatch(c.id, user(e.store, c.id, once), 'profile_save', {
+      scope: 'conversation',
+      profileId: a.id,
+      fields: { email: 'once@example.invalid' },
+      sourceQuote: once,
+    });
+    e.store.saveProfile({ ...e.store.get('profiles', a.id), phone: '13800000000' }, a.id);
+    await start('开票');
+    const snapshot = observed.at(-1).profileSnapshot;
+    assert.equal(snapshot.title, '青禾合成科技有限公司');
+    assert.equal(snapshot.email, 'once@example.invalid');
+    assert.equal(snapshot.phone, '13800000000');
+    assert.equal(e.store.get('profiles', a.id).email, 'a@example.invalid');
+  } finally {
+    await e.close();
+  }
+});
 test('attachments, task controls and approval cannot cross conversation boundaries', async () => {
   const e = await environment();
   try {
@@ -359,8 +422,16 @@ test('deleting a conversation cancels active turns and tasks, erases scoped file
     e.chat.send(c.id, { text: '进行中', attachments: [input.id] }, randomUUID());
     e.chat.send(c.id, { text: '下一条' }, randomUUID());
     await new Promise((r) => setTimeout(r, 20));
+    // Knowledge about the page itself is shared and outlives the conversation.
+    const record = path.join(e.runner.rules.directory, 'example.invalid', 'record.json');
+    await mkdir(path.dirname(record), { recursive: true });
+    await writeFile(record, '{}');
+    e.store.write('settings', { id: 'engine:example.invalid', lightVersion: '1' });
+    const epoch = e.store.memoryEpoch();
     await e.chat.deleteConversation(c.id);
     assert.equal(e.store.get('conversations', c.id), null);
+    // The other conversation keeps its model session.
+    assert.equal(e.store.memoryEpoch(), epoch);
     assert.equal(e.store.messages(c.id).length, 0);
     assert.equal(e.store.get('tasks', task.id), null);
     assert.equal(e.store.get('inputs', input.id), null);
@@ -371,6 +442,8 @@ test('deleting a conversation cancels active turns and tasks, erases scoped file
     assert.ok(e.store.get('profiles', profile.id));
     assert.ok(e.store.get('conversations', other.id));
     assert.ok(e.store.recall('').memories.some((m) => m.content === '小张'));
+    await access(record);
+    assert.ok(e.store.get('settings', 'engine:example.invalid'));
     for (const file of [artifacts, session, path.join(e.config.dataDir, 'uploads', input.file)])
       await assert.rejects(access(file), { code: 'ENOENT' });
   } finally {

@@ -12,21 +12,26 @@ import { companyNameKey, pageCompanyCandidate, validPageTaxId } from '../core/ta
 import { inspectFields } from '../browser/fields.mjs';
 import { pageContract, stableId } from '../rules/contract.mjs';
 import { ruleActions } from '../rules/schema.mjs';
+import {
+  AGENT_FORBIDDEN_TEXT as forbidden,
+  BUYER_TYPE_CHOICE as buyerTypeChoice,
+  BUYER_TYPE_LABEL as buyerTypeLabel,
+  ENTERPRISE_TEXT,
+  GUARDED_TEXT,
+  NAVIGATION_TEXT as navigation,
+  NEXT_STEP_TEXT,
+  NOT_ENTERPRISE_TEXT,
+  PERSONAL_TEXT,
+  SEARCH_TEXT as searchButton,
+  SELLER_TEXT,
+  TAX_LABEL,
+  inPage,
+  isSubmitControl,
+} from '../browser/wording.mjs';
 
 const controlSelector =
   'input,textarea,select,button,a,[role=button],[role=option],[role=combobox],[role=radio],[role=tab],.el-select-dropdown__item,ul[role=listbox] li,.invoice-header-suggest > div';
-const forbidden =
-  /提交|开票|申请|确认|同意|发送|验证码|支付|购买|删除|submit|apply|confirm|agree|send|pay|purchase|delete/i;
-const navigation =
-  /^(?:下一步|继续填写|下一页|返回|上一步|更多内容(?:\s*[（(]非必填[）)])?|展开(?:更多)?|收起|next|back)$/i;
 const normalize = (value) => value.replace(/\s+/g, ' ').trim();
-const searchButton =
-  /^(?:查询|搜索|查找|查询税号|税号查询|查询企业|企业查询|查询公司|公司查询|search)$/i;
-// Buyer-type choices rendered as buttons or role=radio/tab elements instead of native
-// radios (e.g. Vant 抬头类型: 公司/个人).
-const buyerTypeLabel = /抬头类型|购买方类型|发票抬头类型|抬头性质|开票类型|buyer\s*type/i;
-const buyerTypeChoice =
-  /^(?:公司|企业|单位|企业单位|个人|非企业|非企业单位|个人或事业单位|事业单位|其他|personal|individual|enterprise|company)$/i;
 const choiceButton = (control) =>
   (control.tag === 'button' || ['radio', 'tab'].includes(control.role)) &&
   control.type !== 'radio' &&
@@ -36,8 +41,8 @@ const choiceButton = (control) =>
   !forbidden.test(control.text);
 const buttonTypeMatches = (type, text) =>
   type === 'enterprise'
-    ? /企业|公司|单位|enterprise|company/i.test(text) && !/非企业|个人/.test(text)
-    : /个人|personal|individual/i.test(text);
+    ? ENTERPRISE_TEXT.test(text) && !NOT_ENTERPRISE_TEXT.test(text)
+    : PERSONAL_TEXT.test(text);
 
 export function redactProfile(value, profile) {
   if (Array.isArray(value)) return value.map((item) => redactProfile(item, profile));
@@ -132,7 +137,7 @@ export class InvoiceBrowserTools {
           name: control.name,
           stableId: control.stableId,
         };
-        const seller = /销售方|销方|商家信息|seller/i.test(`${control.context} ${control.label}`);
+        const seller = SELLER_TEXT.test(`${control.context} ${control.label}`);
         const text = normalize(control.text);
         let actions = [];
         if (control.visible && control.enabled && trustedFrame && !seller) {
@@ -153,7 +158,7 @@ export class InvoiceBrowserTools {
             actions.push('query_company');
           if (
             ['input', 'textarea'].includes(control.tag) &&
-            /税号|纳税人识别号|统一社会信用代码/.test(`${control.label} ${control.placeholder}`)
+            TAX_LABEL.test(`${control.label} ${control.placeholder}`)
           )
             actions.push('read_tax');
           if (
@@ -245,17 +250,15 @@ export class InvoiceBrowserTools {
     if (action === 'choose_company')
       target.control.text = normalize((await locator.textContent()) || '');
     if (['choose_company', 'query_company', 'open_choices'].includes(action)) {
-      const unsafe = await locator.evaluate((node) => {
+      const unsafe = await locator.evaluate((node, guarded) => {
         const action = node.closest('button,a,input[type=submit],[role=button]');
         return Boolean(
           action &&
           (action.tagName === 'A' ||
             action.type === 'submit' ||
-            /提交|确认|申请|同意|发送|支付|submit|apply|confirm|agree|send|pay/i.test(
-              action.textContent || '',
-            )),
+            new RegExp(guarded.source, guarded.flags).test(action.textContent || '')),
         );
-      });
+      }, inPage(GUARDED_TEXT));
       if (unsafe) throw new AppError('该控件可能触发提交，已停止');
     }
     return { ...target, locator };
@@ -333,10 +336,7 @@ export class InvoiceBrowserTools {
     const requested = normalize(String(option));
     if (target.control.type === 'radio') {
       const label = target.control.label;
-      const desired =
-        this.profile.type === 'enterprise'
-          ? /企业|公司|单位|enterprise|company/i
-          : /个人|personal/i;
+      const desired = this.profile.type === 'enterprise' ? ENTERPRISE_TEXT : PERSONAL_TEXT;
       if (!desired.test(label) || (this.profile.type === 'enterprise' && /非企业/.test(label)))
         throw new AppError('购买方类型与已保存资料不一致');
       // Styled radios (Element Plus, Vant) cover the real input with a span that
@@ -369,9 +369,8 @@ export class InvoiceBrowserTools {
         (item) => !item.disabled && (item.value === requested || item.label === requested),
       );
       if (choices.length !== 1) throw new AppError('下拉选项不唯一或不存在');
-      if (/购买方|抬头类型|开票类型|buyer/i.test(target.control.label)) {
-        const desired =
-          this.profile.type === 'enterprise' ? /企业|company|enterprise/i : /个人|personal/i;
+      if (/购买方|buyer/i.test(target.control.label) || buyerTypeLabel.test(target.control.label)) {
+        const desired = this.profile.type === 'enterprise' ? ENTERPRISE_TEXT : PERSONAL_TEXT;
         if (!desired.test(choices[0].label + ' ' + choices[0].value))
           throw new AppError('购买方类型不符');
       }
@@ -597,7 +596,7 @@ export class InvoiceBrowserTools {
   }
   async continue({ elementRef }) {
     const target = await this.target(elementRef, 'local_navigation');
-    if (/下一|next|继续/i.test(target.control.text)) {
+    if (NEXT_STEP_TEXT.test(target.control.text)) {
       const observed = await this.observe();
       const unverified = observed.frames
         .flatMap((frame) => frame.controls)
@@ -733,13 +732,10 @@ export class InvoiceBrowserTools {
     );
     if (incomplete.length) throw new AppError('缺少完整购买方字段核对：' + incomplete.join('、'));
     const next = controls.some(
-      (c) => c.actions.includes('local_navigation') && /下一|next|继续/i.test(c.text),
+      (c) => c.actions.includes('local_navigation') && NEXT_STEP_TEXT.test(c.text),
     );
     if (next) throw new AppError('还有下一步尚未完成，请继续观察后续必填项');
-    const submit = controls.some(
-      (c) =>
-        c.visible && (c.type === 'submit' || /提交|确认开票|申请开票|submit|apply/i.test(c.text)),
-    );
+    const submit = controls.some((c) => c.visible && isSubmitControl(c));
     if (!submit) throw new AppError('尚未确认抵达最终提交前页面，不能完成填写测试');
     await this.capture('pre-submit');
     this.finished = true;

@@ -12,7 +12,12 @@ import {
   entryRule,
   digest,
 } from '../src/core/validation.mjs';
-import { requestAllowed, installGuard, pageGuard, verifyGuard } from '../src/browser/guard.mjs';
+import {
+  requestAllowed,
+  installGuard,
+  applyPageGuard,
+  verifyGuard,
+} from '../src/browser/guard.mjs';
 import { Runner } from '../src/core/runner.mjs';
 import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
 import { chromium } from 'playwright';
@@ -114,7 +119,7 @@ test('page guard stops our own submit click and Enter, but leaves page scripts a
     await page.setContent(
       '<form><input id="value"><button id="submit">提交开票</button></form><script>window.count=0;document.querySelector("form").onsubmit=e=>{e.preventDefault();window.count++};document.querySelector("button").onclick=()=>window.count++</script>',
     );
-    await page.evaluate(pageGuard);
+    await applyPageGuard(page);
     await page.locator('#value').fill('测试资料');
     await page.locator('#submit').click();
     await page.locator('#value').press('Enter');

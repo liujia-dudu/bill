@@ -11,6 +11,7 @@ import {
 import { runHarness } from '../agent/harness-runtime.mjs';
 import { CHAT_PERSONA } from '../agent/chat-tools.mjs';
 import { Attachments } from './attachments.mjs';
+import { classifyDecision, correctionDetail } from './decision.mjs';
 
 const experienceStatuses = new Set([
   'awaiting_review',
@@ -27,30 +28,29 @@ const experienceStatuses = new Set([
   'already_issued',
   'observed',
 ]);
-// The decision is read from the user's own message by the program; the model's
-// stated decision must agree, so it cannot approve a submission by itself.
-const ABANDON =
-  /放弃|算了|不要了|不用了|不开了|不开票了|不提交|别提交|先不|不需要了|不办了|关掉|关闭页面|取消/;
-const FIX =
-  /不对|不正确|错了|有误|写错|填错|选错|漏了|有问题|修正|修改|改成|改为|改一下|要改|应该是|应为|重新填|重填|换成/;
-const SUBMIT =
-  /确认|提交|没问题|无误|正确|对的|没错|可以|好的|^好$|^行$|就这样|ok|okay|yes|开吧|开票吧|^是的?$/i;
-// Said alongside an abandon word: "filled correctly, but don't submit".
-const CORRECT = /正确|没问题|无误|对的|没错|都对|填对了|填得对/;
-const NEGATED =
-  /不(?:确认|可以|行|是|好|提交)|别|不要|没有?确认|等一?下|等等|先别|稍等|再看|看看|吗|[?？]/;
-const GENERIC_FIX =
-  /不对|不正确|错了|有误|有问题|修正|修改|要改|改一下|重新填|重填|这张|这个|那个|截图|页面|填写|好像|感觉|有点|还是|全|都|吧|了|啊|呢|呀|的|嗯|哦|请|帮我|一下|[\s\p{P}\p{S}]/gu;
-export function classifyDecision(text) {
-  const value = String(text || '').trim();
-  const abandon = ABANDON.test(value),
-    fix = FIX.test(value);
-  if (abandon && !fix) return CORRECT.test(value) ? 'approve' : 'abandon';
-  if (fix && !abandon) return 'fix';
-  if (!abandon && !fix && SUBMIT.test(value) && !NEGATED.test(value)) return 'submit';
-  return null;
+const ORG_WORDS =
+  /有限责任公司|股份有限公司|有限公司|分公司|公司|集团|科技|技术|信息|贸易|实业|发展|服务|中国|[省市区县]/g;
+// The user named this profile: its title or email, a two-character piece of its
+// distinctive name ("青禾" for 青禾合成科技有限公司), or "个人" for a personal profile.
+function profileNamed(text, profile) {
+  if (text.includes(profile.title) || (profile.email && text.includes(profile.email))) return true;
+  if (profile.type === 'personal' && text.includes('个人')) return true;
+  const core = profile.title.replace(ORG_WORDS, '');
+  for (let i = 0; i + 2 <= core.length; i++) if (text.includes(core.slice(i, i + 2))) return true;
+  return false;
 }
-export const correctionDetail = (text) => String(text || '').replace(GENERIC_FIX, '').length >= 2;
+// "这次" changes to a shared profile are kept as the changed fields and laid over the
+// profile's current values, so a later edit of the profile still reaches this invoice.
+function overlay(base, overrides) {
+  const fields = { ...base, ...overrides };
+  if (
+    Object.hasOwn(overrides, 'title') &&
+    overrides.title !== base.title &&
+    !Object.hasOwn(overrides, 'taxId')
+  )
+    fields.taxId = '';
+  return normalizeProfile(fields);
+}
 const localTasks = (store, id) => store.list('tasks').filter((t) => t.conversationId === id);
 const compactTask = (task) => ({
   id: task.id,
@@ -84,6 +84,28 @@ export class ChatService {
     this.taskListener = (task) => this.recordTask(task);
     store.on('task', this.taskListener);
     for (const task of store.list('tasks')) this.recordTask(task);
+  }
+  temporaryProfile(id) {
+    const temporary = this.conversation(id).temporaryProfile;
+    const source =
+      temporary?.overrides &&
+      temporary.sourceProfileId &&
+      this.store.get('profiles', temporary.sourceProfileId);
+    if (!source) return temporary || null;
+    return { ...temporary, ...overlay(source, temporary.overrides), isDefault: false };
+  }
+  // A profile other than the default is used only if the user named it since the
+  // default last changed. The model may otherwise pick it up from older chat history.
+  namedProfile(id, profileId) {
+    const profile = this.store.require('profiles', profileId);
+    if (profile.isDefault) return profile;
+    const since = this.store.defaultChangedAt();
+    const named = this.store
+      .messages(id)
+      .filter((m) => m.role === 'user' && (m.createdAt || '') >= since)
+      .slice(-8)
+      .some((m) => profileNamed(m.text || '', profile));
+    return named ? profile : null;
   }
   conversation(id) {
     const conversation = this.store.require('conversations', id);
@@ -296,7 +318,7 @@ export class ChatService {
       conversationId: id,
       sourceMessageId: message.id,
       memories: memory,
-      temporaryProfile: conversation.temporaryProfile,
+      temporaryProfile: this.temporaryProfile(id),
       attachments: this.store
         .messages(id)
         .filter((m) => m.attachments?.length)
@@ -414,9 +436,7 @@ export class ChatService {
       .map((m) => m.text)
       .join('\n');
     // 已保存资料本身来自用户输入，同字段复用不算编造
-    const saved = [...this.store.list('profiles'), this.conversation(id).temporaryProfile].filter(
-      Boolean,
-    );
+    const saved = [...this.store.list('profiles'), this.temporaryProfile(id)].filter(Boolean);
     for (const [key, value] of Object.entries(fields)) {
       if (['type', 'isDefault'].includes(key)) continue;
       if (!Object.hasOwn(fieldNames, key) || typeof value !== 'string')
@@ -503,7 +523,7 @@ export class ChatService {
         const old = args.profileId
           ? this.store.require('profiles', args.profileId)
           : args.scope === 'conversation'
-            ? conversation.temporaryProfile
+            ? this.temporaryProfile(id)
             : null;
         this.assertFields(id, args.fields, old);
         if (
@@ -518,12 +538,23 @@ export class ChatService {
         if (old && fields.title !== old.title && !Object.hasOwn(args.fields, 'taxId'))
           fields.taxId = '';
         if (args.scope === 'conversation') {
+          const previous = conversation.temporaryProfile;
+          const sourceProfileId = args.profileId || previous?.sourceProfileId || null;
+          const sameSource =
+            previous && (!args.profileId || args.profileId === previous.sourceProfileId);
+          // Only the changed fields follow the shared profile; an older full copy stays a copy.
+          const overrides = !sourceProfileId
+            ? undefined
+            : sameSource
+              ? previous.overrides && { ...previous.overrides, ...args.fields }
+              : { ...args.fields };
           const temporaryProfile = {
             ...normalizeProfile(fields),
             id: `temporary-${id}`,
-            revision: (conversation.temporaryProfile?.revision || 0) + 1,
+            revision: (previous?.revision || 0) + 1,
             isDefault: false,
-            sourceProfileId: args.profileId || null,
+            sourceProfileId,
+            ...(overrides ? { overrides } : {}),
           };
           this.store.patchConversation(id, { temporaryProfile });
           result = { saved: true, scope: 'conversation', profile: temporaryProfile };
@@ -586,11 +617,12 @@ export class ChatService {
           throw new AppError('图片中有多个地址，请让用户选择');
         const conversation = this.conversation(id);
         const profiles = this.store.list('profiles');
-        const profile = args.profileId
-          ? this.store.require('profiles', args.profileId)
-          : conversation.temporaryProfile ||
-            profiles.find((p) => p.isDefault) ||
-            (profiles.length === 1 ? profiles[0] : null);
+        const named = args.profileId && this.namedProfile(id, args.profileId);
+        const profile =
+          named ||
+          this.temporaryProfile(id) ||
+          profiles.find((p) => p.isDefault) ||
+          (profiles.length === 1 ? profiles[0] : null);
         if (!profile && args.mode !== 'read_only')
           throw new AppError('还没有明确的开票资料，请在聊天中补充或选择');
         const task = await this.runner.create(
@@ -625,6 +657,11 @@ export class ChatService {
           started: true,
           task: compactTask(task),
           delivery: '进度和截图会自动回到本对话',
+          ...(args.profileId && !named
+            ? {
+                profileNote: `用户最近没有点名所选资料，已改用${profile?.title || '当前资料'}；如需别的资料请先向用户确认`,
+              }
+            : {}),
           ...(replaced ? { previousAbandoned: replaced } : {}),
         };
         if (conversation.temporaryProfile && profile?.id === conversation.temporaryProfile.id)
@@ -682,10 +719,10 @@ export class ChatService {
           throw new AppError('正在停止原任务，请等待关闭后再重新准备');
         }
         if (old.status === 'awaiting_review') this.runner.cancel(old.id);
-        const profile = args.profileId
-          ? this.store.require('profiles', args.profileId)
-          : this.conversation(id).temporaryProfile ||
-            (old.temporaryProfile ? old.profile : this.store.get('profiles', old.profileId));
+        const profile =
+          (args.profileId && this.namedProfile(id, args.profileId)) ||
+          this.temporaryProfile(id) ||
+          (old.temporaryProfile ? old.profile : this.store.get('profiles', old.profileId));
         const original = this.store.get('inputs', old.inputId);
         const task = await this.runner.create(
           {
@@ -773,7 +810,7 @@ export class ChatService {
         // The user found the fill wrong: stop reusing the steps behind it.
         await this.runner.forget(task.id);
         const profile =
-          this.conversation(id).temporaryProfile ||
+          this.temporaryProfile(id) ||
           (task.temporaryProfile ? task.profile : this.store.get('profiles', task.profileId));
         const original = this.store.get('inputs', task.inputId);
         const next = await this.runner.create(

@@ -1,5 +1,17 @@
 import { AppError } from '../core/validation.mjs';
 import { inspectFields } from './fields.mjs';
+import {
+  AGREEMENT_TEXT,
+  ALREADY_SUBMITTED_TEXT,
+  EXPIRED_TEXT,
+  ISSUED_TEXT,
+  MARKETING_TEXT,
+  SIDE_EFFECT_TEXT,
+  WECHAT_ONLY_TEXT,
+  inPage,
+} from './wording.mjs';
+
+const AGREEMENT_WORDS = { agreement: inPage(AGREEMENT_TEXT), marketing: inPage(MARKETING_TEXT) };
 
 // Read rendered amounts, including readonly inputs omitted by innerText.
 export function inspectInvoiceAmounts() {
@@ -44,7 +56,8 @@ export function inspectInvoiceAmounts() {
 // Agreement checkboxes ("我已阅读并同意《用户授权协议》"). Only the program ticks them,
 // inside the user-confirmed submission; the fill Agent never can. Styled checkboxes
 // (Element Plus) hide the input, so visibility and text come from its wrapper.
-export function inspectAgreements({ attribute } = {}) {
+export function inspectAgreements({ attribute, words }) {
+  const pattern = (word) => new RegExp(word.source, word.flags);
   const visible = (node) => {
     const rect = node?.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return false;
@@ -60,9 +73,9 @@ export function inspectAgreements({ attribute } = {}) {
       holder = holder.parentElement;
     }
     const text = (holder?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-    if (!/同意|已阅读|协议|条款|隐私|授权|agree|terms|privacy/i.test(text)) continue;
+    if (!pattern(words.agreement).test(text)) continue;
     // Marketing opt-ins are never ticked on the user's behalf.
-    if (/营销|订阅|推送|广告|促销|优惠|会员|marketing|subscribe|newsletter/i.test(text)) continue;
+    if (pattern(words.marketing).test(text)) continue;
     if (!visible(box) && !visible(box.closest('label')) && !visible(holder)) continue;
     if (attribute) box.setAttribute(attribute, String(index));
     result.push({ id: String(index), text, checked: box.checked });
@@ -85,11 +98,14 @@ export async function tickAgreements(page) {
       continue;
     }
     if (frameOrigin !== origin && !(frameOrigin === 'null' && frame.parentFrame())) continue;
-    for (const box of await frame.evaluate(inspectAgreements, { attribute })) {
+    for (const box of await frame.evaluate(inspectAgreements, {
+      attribute,
+      words: AGREEMENT_WORDS,
+    })) {
       if (box.checked) continue;
       const result = { text: box.text, checked: false };
       results.push(result);
-      if (/验证码|发送|支付|购买|付款|pay|purchase|send/i.test(box.text)) continue;
+      if (SIDE_EFFECT_TEXT.test(box.text)) continue;
       const locator = frame.locator(`[${attribute}="${box.id}"]`);
       await locator.evaluate((node) => node.click());
       await page.waitForTimeout(300);
@@ -107,7 +123,7 @@ export async function screenshotWithAgreementNotes(page, options) {
   const marked = [];
   for (const frame of page.frames()) {
     try {
-      const boxes = await frame.evaluate(inspectAgreements, { attribute });
+      const boxes = await frame.evaluate(inspectAgreements, { attribute, words: AGREEMENT_WORDS });
       marked.push(frame);
       const pending = boxes.filter((box) => !box.checked);
       if (!pending.length) continue;
@@ -352,33 +368,27 @@ export async function observePage(page) {
             disabled: !control.enabled,
           })),
         amounts: await evaluateWithin(frame, inspectInvoiceAmounts),
-        agreementBoxes: await evaluateWithin(frame, inspectAgreements, {}),
+        agreementBoxes: await evaluateWithin(frame, inspectAgreements, { words: AGREEMENT_WORDS }),
       });
   }
   return { at: new Date().toISOString(), url: page.url(), frames };
 }
 export function classifyPage(observation) {
   const text = observation.frames.map((frame) => frame.innerText || frame.contentText).join('\n');
-  // Delivery pages such as the tax bureau's 数电发票 viewer only show the invoice
-  // number and PDF/OFD/XML downloads.
-  if (
-    /发票已开具|开票成功|已开票|发票代码[\s\S]*发票号码|下载发票|查看发票|数电发票号码|您已接收到.{0,30}电子发票|(?:PDF|OFD|XML)\s*下载[\s\S]{0,40}(?:PDF|OFD|XML)\s*下载/.test(
-      text,
-    )
-  )
+  if (ISSUED_TEXT.test(text))
     return {
       status: 'already_issued',
       message: '页面显示这笔订单已开过发票，已停止重复填写；如确需重开请先核对上一条记录',
     };
-  if (/发票已提交|申请已提交|已申请开票|开票申请已受理/.test(text))
+  if (ALREADY_SUBMITTED_TEXT.test(text))
     return { status: 'already_submitted', message: '页面显示已有开票申请，已停止新的填写申请' };
-  if (/请在微信|微信客户端|请使用微信/.test(text))
+  if (WECHAT_ONLY_TEXT.test(text))
     return {
       status: 'unsupported_browser',
       reasonCode: 'client_required',
       message: '页面要求使用微信客户端',
     };
-  if (/已过期|链接失效|超过开票|开票码已失效/.test(text))
+  if (EXPIRED_TEXT.test(text))
     return { status: 'failed', reasonCode: 'expired', message: '页面显示链接已失效或超过开票期限' };
   return null;
 }

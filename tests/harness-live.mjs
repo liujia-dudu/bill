@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { runInvoiceAgent } from '../src/agent/run-invoice.mjs';
-import { installGuard, pageGuard } from '../src/browser/guard.mjs';
+import { installGuard, applyPageGuard } from '../src/browser/guard.mjs';
 import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
 import {
   syntheticBrowser,
@@ -52,7 +52,7 @@ for (const testCase of cases) {
     const page = await context.newPage();
     let html = await readFile(`tests/fixtures/pages/${testCase.file}`, 'utf8');
     await page.setContent(testCase.mutate(html));
-    await page.evaluate(pageGuard);
+    await applyPageGuard(page);
     const result = await runInvoiceAgent({
       page,
       profile: testCase.profile ? { ...testCase.profile } : { ...DEMO_PROFILE },

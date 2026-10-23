@@ -7,7 +7,8 @@ import { randomUUID } from 'node:crypto';
 import { chromium } from 'playwright';
 import { Store } from '../src/storage/store.mjs';
 import { Runner } from '../src/core/runner.mjs';
-import { ChatService, classifyDecision, correctionDetail } from '../src/core/chat-service.mjs';
+import { ChatService } from '../src/core/chat-service.mjs';
+import { classifyDecision, correctionDetail } from '../src/core/decision.mjs';
 import { installGuard } from '../src/browser/guard.mjs';
 import { digest } from '../src/core/validation.mjs';
 import { ROOT } from '../src/server/config.mjs';
@@ -134,7 +135,19 @@ async function environment({ reviewWindowMs } = {}) {
 }
 
 test('decisions are read from the user text, never from the model', () => {
-  for (const text of ['确认', '确认提交', '没问题，提交吧', '确认无误', '可以', '好的', 'OK'])
+  for (const text of [
+    '确认',
+    '确认提交',
+    '没问题，提交吧',
+    '确认无误',
+    '可以',
+    '好的',
+    'OK',
+    // "Nothing is wrong" is not a correction.
+    '没有问题，确认提交',
+    '没填错，提交',
+    '确认无误，不需要修改',
+  ])
     assert.equal(classifyDecision(text), 'submit', text);
   for (const text of ['不对', '邮箱不对，应该是 a@example.invalid', '抬头选错了', '有问题'])
     assert.equal(classifyDecision(text), 'fix', text);
@@ -145,6 +158,19 @@ test('decisions are read from the user text, never from the model', () => {
   assert.equal(classifyDecision('先不提交，看看对不对'), null);
   for (const text of ['可以吗？', '等一下', '我再看看', '你好', '不确认', '别提交了但是邮箱不对'])
     assert.notEqual(classifyDecision(text), 'submit', text);
+  // Asking to check something, questions, conditions and approvals of a single field
+  // are not a decision to submit.
+  for (const text of [
+    '确认一下邮箱',
+    '帮我确认下抬头',
+    '提交到哪个邮箱',
+    '如果没问题就提交',
+    '邮箱对的话就提交',
+    '可以把截图再发一次',
+    '这个税号正确',
+    '取消勾选那个协议再提交',
+  ])
+    assert.equal(classifyDecision(text), null, text);
   assert.equal(correctionDetail('不对'), false);
   assert.equal(correctionDetail('感觉不对，重新填一下吧'), false);
   assert.equal(correctionDetail('邮箱不对'), true);
@@ -288,7 +314,7 @@ test('our click needs a fresh controller pass each time; page requests are never
       'sent',
     );
     assert.deepEqual(guard.released, []);
-    guard.arm(5000, ['example.invalid']);
+    guard.arm(5000, 'example.invalid');
     await page.evaluate(() => window.__invoiceSubmitPass(5000));
     await page.locator('#submit').click();
     assert.equal(await page.evaluate(() => window.submitted), 1);
@@ -312,6 +338,7 @@ test('second confirmations are accepted; new fields or no request stop honestly'
     for (const [mode, status, actualSubmitted] of [
       ['confirm', 'submitted', true],
       ['dialog', 'submitted', true],
+      ['warn', 'submitted', true],
       ['fields', 'needs_user_input', false],
       ['silent', 'submit_failed', false],
     ]) {
@@ -342,6 +369,10 @@ test('only an error the page shows after the click is a failure; a quiet page is
     for (const [mode, status, actualSubmitted, message] of [
       ['quiet', 'submitted_unverified', true, /^已提交$/],
       ['rejected', 'submit_failed', false, /邮箱格式不正确.*重来/],
+      // A toast seen right after the click counts even after it disappears.
+      ['toast', 'submit_failed', false, /税号格式不正确.*重来/],
+      // The API on a subdomain of the invoice site is the same site.
+      ['api', 'submitted_unverified', true, /^已提交$/],
       ['silent', 'submit_failed', false, /没有反应.*重来/],
     ]) {
       const { task } = await e.review(mode);

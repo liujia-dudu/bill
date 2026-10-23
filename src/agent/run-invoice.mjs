@@ -22,6 +22,59 @@ function hintSteps(steps) {
   }));
 }
 
+// Fields the model never needs; layout and bookkeeping only.
+const HIDDEN_KEYS = new Set(['index', 'rect', 'isContentEditable', 'trustedFrame']);
+const KEEP_EMPTY = new Set(['actions', 'valuePresent']);
+const shown = (value) =>
+  value !== undefined &&
+  value !== null &&
+  value !== false &&
+  value !== '' &&
+  !(Array.isArray(value) && !value.length);
+
+// What the model sees of each observation. Every tool returns a fresh observation and
+// the conversation keeps all of them, so the page text is sent in full once per frame
+// and afterwards only as the lines that are new; only visible controls are listed,
+// without empty fields. The tools, trace and rules still use the full observation.
+export function modelView() {
+  const seen = new Map();
+  return (result) => {
+    if (!Array.isArray(result?.frames)) return result;
+    return {
+      ...result,
+      frames: result.frames.map(({ text = '', controls = [], ...frame }) => {
+        const lines = text
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean);
+        const known = seen.get(frame.frameIndex);
+        seen.set(frame.frameIndex, new Set(lines));
+        const added = known && lines.filter((line) => !known.has(line));
+        return {
+          ...frame,
+          ...(!known
+            ? { text }
+            : added.length
+              ? { newText: added.join('\n') }
+              : { textUnchanged: true }),
+          controls: controls
+            .filter((control) => control.visible)
+            .map((control) =>
+              Object.fromEntries(
+                Object.entries(control).filter(
+                  ([key, value]) =>
+                    !HIDDEN_KEYS.has(key) &&
+                    key !== 'visible' &&
+                    (KEEP_EMPTY.has(key) || shown(value)),
+                ),
+              ),
+            ),
+        };
+      }),
+    };
+  };
+}
+
 export async function runInvoiceAgent({
   page,
   profile,
@@ -59,7 +112,8 @@ export async function runInvoiceAgent({
     if (onCheck) tools.onCheck = onCheck;
     if (onTaxVerified) tools.onTaxVerified = onTaxVerified;
   }
-  const initial = await tools.observe();
+  const view = modelView();
+  const initial = view(await tools.observe());
   const audit = await runHarness({
     taskId,
     dataDir,
@@ -68,7 +122,7 @@ export async function runInvoiceAgent({
     stopAfter: (name) => name === 'invoice_finish' && tools.finished,
     dispatch: async (name, args) => {
       try {
-        return await tools.dispatch(name, args);
+        return view(await tools.dispatch(name, args));
       } catch (error) {
         error.message = redactProfile(error.message, profile);
         throw error;

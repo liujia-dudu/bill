@@ -14,7 +14,8 @@ import { randomUUID } from 'node:crypto';
 export const SYNTHETIC_URL = 'https://example.invalid/invoice?order=synthetic';
 const lookup = dns.lookup;
 export function syntheticDns(hostname, ...args) {
-  return hostname === 'example.invalid'
+  // api.example.invalid: a submission sent to the invoice site's API subdomain.
+  return ['example.invalid', 'api.example.invalid'].includes(hostname)
     ? Promise.resolve([{ address: '203.0.113.10', family: 4 }])
     : lookup(hostname, ...args);
 }

@@ -10,7 +10,7 @@ import { Store } from '../src/storage/store.mjs';
 import { configuration } from '../src/server/config.mjs';
 import { Runner } from '../src/core/runner.mjs';
 import { InvoiceBrowserTools } from '../src/agent/browser-tools.mjs';
-import { installGuard, pageGuard } from '../src/browser/guard.mjs';
+import { installGuard, applyPageGuard } from '../src/browser/guard.mjs';
 import { validCreditCode } from '../src/core/tax-id.mjs';
 
 const title = '青禾合成科技有限公司';
@@ -35,7 +35,7 @@ async function setup() {
   await installGuard(context, { demo: true });
   const page = await context.newPage();
   await page.setContent(html);
-  await page.evaluate(pageGuard);
+  await applyPageGuard(page);
   const tools = new InvoiceBrowserTools({
     page,
     profile: { ...saved },

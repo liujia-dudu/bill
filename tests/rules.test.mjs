@@ -12,7 +12,7 @@ import { buildPending, PENDING_FILE } from '../src/rules/candidate.mjs';
 import { pageContract } from '../src/rules/contract.mjs';
 import { validateVariant, profileFields } from '../src/rules/schema.mjs';
 import { observePage } from '../src/browser/observe.mjs';
-import { installGuard, pageGuard } from '../src/browser/guard.mjs';
+import { installGuard, applyPageGuard } from '../src/browser/guard.mjs';
 import { Store } from '../src/storage/store.mjs';
 import { Runner } from '../src/core/runner.mjs';
 
@@ -68,7 +68,7 @@ async function browserFixture(directory, content = html) {
     route.fulfill({ contentType: 'text/html; charset=utf-8', body: content }),
   );
   await page.goto(`https://${host}/invoice?order=synthetic`);
-  await page.evaluate(pageGuard);
+  await applyPageGuard(page);
   const tools = new InvoiceBrowserTools({ page, profile: { ...profile }, directory, demo: true });
   return { browser, page, tools };
 }
@@ -91,7 +91,7 @@ function pendingOf(tools, page, initialProfile = profile) {
 }
 async function replayRoute(registry, page, replayProfile = profile) {
   await page.reload();
-  await page.evaluate(pageGuard);
+  await applyPageGuard(page);
   const route = await registry.select(await observePage(page), replayProfile);
   assert.equal(route.source, 'adapter');
   return route;

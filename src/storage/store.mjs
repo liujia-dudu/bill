@@ -122,7 +122,8 @@ export class Store extends EventEmitter {
           this.remove('memories', memory.id);
       this.db.prepare('DELETE FROM messages WHERE conversation_id=?').run(id);
       this.remove('conversations', id);
-      this.invalidateModelMemory();
+      // Other conversations keep their model sessions: deleting one conversation cleans
+      // up that conversation, it does not ask the others to forget anything.
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -165,6 +166,7 @@ export class Store extends EventEmitter {
     item.problems = profileProblems(item);
     item.ready = item.problems.length === 0;
     if (!this.list('profiles').length) item.isDefault = true;
+    const previousDefault = this.list('profiles').find((p) => p.isDefault)?.id;
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (item.isDefault)
@@ -172,6 +174,7 @@ export class Store extends EventEmitter {
           if (other.id !== item.id && other.isDefault)
             this.write('profiles', { ...other, isDefault: false });
       this.write('profiles', item);
+      if (item.isDefault && previousDefault !== item.id) this.defaultChanged();
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
@@ -200,8 +203,10 @@ export class Store extends EventEmitter {
           reviewStatus: 'invalidated',
         });
     const remaining = this.list('profiles');
-    if (remaining.length && !remaining.some((p) => p.isDefault))
+    if (remaining.length && !remaining.some((p) => p.isDefault)) {
       this.write('profiles', { ...remaining[0], isDefault: true });
+      this.defaultChanged();
+    }
     for (const memory of this.list('memories'))
       if (memory.profileId === id) this.forgetMemory(memory.id);
     this.invalidateModelMemory();
@@ -210,6 +215,14 @@ export class Store extends EventEmitter {
       if (c.temporaryProfile?.sourceProfileId === id) patch.temporaryProfile = null;
       if (Object.keys(patch).length) this.patchConversation(c.id, patch);
     }
+  }
+  // When the default profile last changed; an older chat mention of another profile
+  // may no longer be what the user means.
+  defaultChanged() {
+    this.write('settings', { id: 'default-profile-changed', at: now() });
+  }
+  defaultChangedAt() {
+    return this.get('settings', 'default-profile-changed')?.at || '';
   }
   savePageTax(taskId, { title, taxId, source }) {
     const task = this.require('tasks', taskId);

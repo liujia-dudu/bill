@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 import { readFile, mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { requestAllowed, installGuard, pageGuard } from '../src/browser/guard.mjs';
+import { requestAllowed, installGuard, applyPageGuard } from '../src/browser/guard.mjs';
 import {
   observePage,
   assertInvoiceAmounts,
@@ -13,6 +13,7 @@ import {
   tickAgreements,
 } from '../src/browser/observe.mjs';
 import { InvoiceBrowserTools } from '../src/agent/browser-tools.mjs';
+import { submitInvoice } from '../src/browser/submit.mjs';
 
 const entryUrl = 'https://pos.mzdpgroup.com/mobile/inv/index.html?orderId=123456';
 const companyTitle = '青禾合成科技有限公司';
@@ -50,7 +51,7 @@ test('unlabelled Vant inputs and delayed div suggestions can verify page tax and
     await page.setContent(
       await readFile(new URL('./fixtures/pages/invoice-vant-demo.html', import.meta.url), 'utf8'),
     );
-    await page.evaluate(pageGuard);
+    await applyPageGuard(page);
     const profile = {
       type: 'enterprise',
       title: companyTitle,
@@ -125,7 +126,7 @@ test('buyer type rendered as formless Vant buttons can be switched to personal w
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext();
-    await installGuard(context, { demo: true });
+    const guard = await installGuard(context, { demo: true });
     const page = await context.newPage();
     await page.setContent(
       await readFile(
@@ -133,7 +134,7 @@ test('buyer type rendered as formless Vant buttons can be switched to personal w
         'utf8',
       ),
     );
-    await page.evaluate(pageGuard);
+    await applyPageGuard(page);
     // A personal title of just "个人" must not hide the page's own type option.
     const profile = { type: 'personal', title: '个人', email: 'test@example.invalid' };
     const tools = new InvoiceBrowserTools({ page, profile, directory, demo: true });
@@ -157,6 +158,10 @@ test('buyer type rendered as formless Vant buttons can be switched to personal w
     // Our own trusted clicks on submit-typed buttons stay blocked by the guard.
     await page.locator('#submit').click();
     assert.equal(await page.evaluate(() => window.submissionCount), 0);
+    // The confirmed submission clicks the one real submit button, not the formless
+    // 公司/个人 buttons that are type=submit by default.
+    await submitInvoice({ page, guard, directory });
+    assert.equal(await page.evaluate(() => window.submissionCount), 1);
   } finally {
     await browser.close();
   }
@@ -343,7 +348,7 @@ test('the program ticks agreements before review but never marketing or unsafe o
       </span></label> 我已阅读并同意《用户授权协议》</div>
       <label><input type="checkbox" id="marketing" /> 同意接收营销短信</label>
       <label><input type="checkbox" id="pay" /> 同意《免密支付协议》</label>`);
-    await page.evaluate(pageGuard);
+    await applyPageGuard(page);
     const results = await tickAgreements(page);
     assert.deepEqual(
       results.map((r) => [/授权/.test(r.text), r.checked]),

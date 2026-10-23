@@ -5,11 +5,12 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { InvoiceBrowserTools, redactProfile } from '../src/agent/browser-tools.mjs';
-import { pageGuard, installGuard } from '../src/browser/guard.mjs';
+import { applyPageGuard, installGuard } from '../src/browser/guard.mjs';
 import { SYNTHETIC_PROFILE as DEMO_PROFILE } from './fixtures/profile.mjs';
 import { pageContract } from '../src/rules/contract.mjs';
 import { modelHealth } from '../src/agent/model-config.mjs';
 import { observePage } from '../src/browser/observe.mjs';
+import { modelView } from '../src/agent/run-invoice.mjs';
 
 async function fixture(html) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'invoice-agent-'));
@@ -18,7 +19,7 @@ async function fixture(html) {
   await installGuard(context, { demo: true });
   const page = await context.newPage();
   await page.setContent(html);
-  await page.evaluate(pageGuard);
+  await applyPageGuard(page);
   const tools = new InvoiceBrowserTools({ page, profile: DEMO_PROFILE, directory, demo: true });
   return { browser, page, tools };
 }
@@ -188,4 +189,20 @@ test('hidden required stars leave phone optional while visible and native requir
   } finally {
     await browser.close();
   }
+});
+
+test('the model sees page text once, then only new lines, and only visible controls', () => {
+  const view = modelView();
+  const observation = (text, controls) => ({ frames: [{ frameIndex: 0, text, controls }] });
+  const email = { label: '邮箱', visible: true, required: true, valuePresent: false, actions: [] };
+  const hidden = { label: '税号', visible: false, actions: ['fill'] };
+  const first = view(observation('填写开票信息\n邮箱', [email, hidden])).frames[0];
+  assert.equal(first.text, '填写开票信息\n邮箱');
+  assert.deepEqual(first.controls, [
+    { label: '邮箱', required: true, valuePresent: false, actions: [] },
+  ]);
+  assert.equal(view(observation('填写开票信息\n邮箱', [email])).frames[0].textUnchanged, true);
+  const changed = view(observation('填写开票信息\n邮箱\n请输入正确的邮箱', [email])).frames[0];
+  assert.equal(changed.text, undefined);
+  assert.equal(changed.newText, '请输入正确的邮箱');
 });

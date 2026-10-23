@@ -3,16 +3,18 @@ import path from 'node:path';
 import { AppError, safeMessage } from '../core/validation.mjs';
 import { classifyPage, tickAgreements } from './observe.mjs';
 
+import {
+  CONFIRM_BUTTON,
+  ERROR_TEXT,
+  FAILURE_TEXT,
+  KNOWN_DIALOG,
+  SIDE_EFFECT_TEXT,
+  SUCCESS_TEXT,
+  isSubmitControl,
+} from './wording.mjs';
+
 // Runs only from Runner.decide after the user's own chat reply confirmed the
 // screenshot. The fill Agent never reaches this module.
-const SUBMIT = /提交|确认开票|申请开票|立即开票|submit|apply/i;
-const UNSAFE = /验证码|发送|支付|购买|付款|pay|purchase|send/i;
-const CONFIRM =
-  /^(?:确认|确定|确认提交|确认开票|确认无误|提交|继续提交|立即开票|是|好|好的|ok|yes|confirm|submit)$/i;
-const KNOWN_DIALOG = /确认|确定|提交|开票|核对|是否|无误|抬头|邮箱|税号|发票|信息/;
-const SUCCESS =
-  /提交成功|申请成功|开票成功|开具成功|已受理|受理成功|提交完成|申请已提交|发票已提交|开票申请已受理/;
-const ERROR = /失败|错误|不能为空|请填写|请输入|格式不正确|有误|异常/;
 const DIALOG =
   '[role=dialog],[role=alertdialog],[aria-modal=true],.van-dialog,.van-popup,.el-message-box,.el-dialog,.ant-modal,.weui-dialog,[class*=modal],[class*=dialog],[class*=popup]';
 
@@ -52,6 +54,7 @@ function scan({ attribute, dialog }) {
       id,
       text: text(el).slice(0, 80),
       type: el.type || '',
+      inForm: Boolean(el.form),
       inDialog: Boolean(el.closest(dialog)),
     });
   }
@@ -87,7 +90,7 @@ const errorLines = (text) =>
   text
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line && line.length <= 80 && ERROR.test(line));
+    .filter((line) => line && line.length <= 80 && ERROR_TEXT.test(line));
 const flat = (frames, key) => frames.flatMap((frame) => frame[key]);
 const buttonsOf = (frames) =>
   frames.flatMap((frame) => frame.buttons.map((button) => ({ ...button, frame: frame.frame })));
@@ -102,9 +105,7 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
   const attribute = `data-invoice-submit-${Math.random().toString(16).slice(2, 10)}`;
   const record = { dialogs: [], clicks: [], startedAt: new Date().toISOString() };
   const before = await scanAll(page, attribute);
-  const submits = buttonsOf(before).filter(
-    (button) => (button.type === 'submit' || SUBMIT.test(button.text)) && !UNSAFE.test(button.text),
-  );
+  const submits = buttonsOf(before).filter(isSubmitControl);
   // Some mobile forms live inside a popup container; prefer buttons outside it.
   const outside = submits.filter((button) => !button.inDialog);
   const candidates = outside.length ? outside : submits;
@@ -116,10 +117,11 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
     );
   const knownFields = new Set(flat(before, 'fields'));
   const knownDialogs = new Set(flat(before, 'dialogs'));
-  const successBefore = SUCCESS.test(flat(before, 'body').join('\n'));
+  const successBefore = SUCCESS_TEXT.test(flat(before, 'body').join('\n'));
   // Only error text that appears after our click counts as the page rejecting it.
   const errorsBefore = new Set(errorLines(flat(before, 'body').join('\n')));
-  let stop = null;
+  let stop = null,
+    pageError;
   const onDialog = async (dialog) => {
     const message = dialog.message().slice(0, 300);
     const accept =
@@ -132,7 +134,7 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
   page.on('dialog', onDialog);
   let result;
   try {
-    guard.arm(30000, [new URL(page.url()).hostname]);
+    guard.arm(30000, new URL(page.url()).hostname);
     // Normally already ticked before the review screenshot; this catches any the
     // page reset, still within the user's confirmation.
     for (const box of await tickAgreements(page)) {
@@ -152,22 +154,32 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
       await page.waitForTimeout(1200);
       check();
       const after = await scanAll(page, attribute);
-      if (SUCCESS.test(flat(after, 'body').join('\n')) && !successBefore) break;
+      const body = flat(after, 'body').join('\n');
+      if (SUCCESS_TEXT.test(body) && !successBefore) break;
+      const dialogs = flat(after, 'dialogs').filter((text) => !knownDialogs.has(text));
+      const confirms = buttonsOf(after).filter(
+        (button) => button.inDialog && CONFIRM_BUTTON.test(button.text),
+      );
+      // A second confirmation may warn "如有误…"; it is confirmed below, not a failure.
+      const confirmation =
+        confirms.length === 1 && !dialogs.some((text) => FAILURE_TEXT.test(text));
+      // A failure toast may be gone by the final read, so keep the first one seen.
+      const error = errorLines(body).find((line) => !errorsBefore.has(line));
+      if (error && !(dialogs.length && confirmation)) {
+        pageError = error;
+        break;
+      }
       const added = flat(after, 'fields').filter((field) => !knownFields.has(field));
       if (added.length) {
         stop = { reason: 'new_fields', text: `出现 ${added.length} 个新的填写项` };
         break;
       }
-      const dialogs = flat(after, 'dialogs').filter((text) => !knownDialogs.has(text));
       if (!dialogs.length) break;
-      const confirms = buttonsOf(after).filter(
-        (button) => button.inDialog && CONFIRM.test(button.text),
-      );
       if (
         round === 3 ||
         confirms.length !== 1 ||
         !dialogs.every((text) => KNOWN_DIALOG.test(text)) ||
-        dialogs.some((text) => UNSAFE.test(text))
+        dialogs.some((text) => SIDE_EFFECT_TEXT.test(text))
       ) {
         stop = { reason: 'unknown_dialog', text: dialogs.join(' / ').slice(0, 300) };
         break;
@@ -181,10 +193,10 @@ export async function submitInvoice({ page, guard, directory, check = () => {} }
     const text = flat(final, 'body').join('\n');
     const classified = classifyPage({ frames: [{ innerText: text }] });
     const succeeded =
-      (!successBefore && SUCCESS.test(text)) ||
+      (!successBefore && SUCCESS_TEXT.test(text)) ||
       ['already_issued', 'already_submitted'].includes(classified?.status);
     const sent = submissionSent(guard.released);
-    const rejected = errorLines(text).find((line) => !errorsBefore.has(line));
+    const rejected = pageError || errorLines(text).find((line) => !errorsBefore.has(line));
     result = stop
       ? {
           status: 'needs_user_input',
